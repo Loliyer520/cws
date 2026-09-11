@@ -1,0 +1,12 @@
+{
+  "port": 8642,
+  "claude_bin": "/usr/local/bin/claude",
+  "max_active_sessions": 3,
+  "queue_max": 5,
+  "turn_timeout": 0,
+  "ask_timeout": 600,
+  "min_turn_interval": 2,
+  "idle_timeout_s": 1800,
+  "allowed_tools": "Read,Grep,Glob,AskUserQuestion",
+  "permission_mode": "default"
+}

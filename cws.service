@@ -1,0 +1,14 @@
+[Unit]
+Description=cc-bridge: Claude Code multi-session WebSocket bridge
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/my/run/cws
+ExecStart=/my/run/cws/venv/bin/python /my/run/cws/bridge.py
+Restart=always
+RestartSec=3
+Environment=PATH=/www/server/nodejs/v24.20.0/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

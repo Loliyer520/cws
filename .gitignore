@@ -1,0 +1,9 @@
+# 机密与本地产物——绝不提交
+secrets.json
+config.json
+config.json.bak*
+*.bak*
+__pycache__/
+venv/
+workspaces/
+restart_bridge.log
