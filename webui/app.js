@@ -7,21 +7,23 @@ const state = {
   echo: 0,
   token: sessionStorage.getItem('cws_token') || '',
   sessions: new Map(),   // sid -> session info
-  current: null,         // current sid
+  current: null,
   marks: JSON.parse(localStorage.getItem('cws_marks') || '{}'), // sid -> last mid
   seenMids: new Map(),   // sid -> Set(mid)
   channels: [],
   defaultChannel: '',
-  streaming: null,       // current streaming cc element
-  thinking: null,        // thinking indicator element
-  asks: new Map(),       // ask_id -> card element
+  streaming: null,
+  thinking: null,
+  asks: new Map(),
   chanModal: { editing: null },
 };
 
 const PERM_OPTIONS = {
-  claude: [['default', '默认（按需询问）'], ['acceptEdits', '接受编辑'], ['bypassPermissions', '完全允许'], ['plan', '只读规划']],
+  claude: [['default', '默认 · 按需询问'], ['acceptEdits', '接受编辑'], ['bypassPermissions', '完全允许'], ['plan', '只读规划']],
   codex: [['read-only', '只读'], ['workspace-write', '工作区可写'], ['full-auto', '绕过审批与沙箱'], ['danger-full-access', '完全访问']],
 };
+
+const BACKEND_LETTER = { claude: 'C', codex: 'X' };
 
 // ---------- helpers ----------
 function toast(text, kind = '') {
@@ -29,7 +31,7 @@ function toast(text, kind = '') {
   t.className = 'toast ' + kind;
   t.textContent = text;
   $('toasts').appendChild(t);
-  setTimeout(() => t.remove(), 5000);
+  setTimeout(() => t.remove(), 5200);
 }
 
 function seenMidsOf(sid) {
@@ -51,12 +53,19 @@ function sessionOf(sid) {
   return state.sessions.get(sid);
 }
 
-function send(action, params = {}) {
+function send(action, params) {
   if (!state.ws || state.ws.readyState !== 1) return null;
   state.echo += 1;
   const echo = 'e' + state.echo;
-  state.ws.send(JSON.stringify({ action, params, echo }));
+  state.ws.send(JSON.stringify({ action, params: params || {}, echo }));
   return echo;
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined && text !== null) e.textContent = text;
+  return e;
 }
 
 // ---------- connection ----------
@@ -66,7 +75,8 @@ function connect() {
   const ws = new WebSocket(proto + '//' + location.host + '/ws?token=' + encodeURIComponent(state.token));
   state.ws = ws;
   ws.onopen = () => {
-    $('conn-dot').classList.add('on');
+    $('conn-pill').classList.add('on');
+    $('conn-pill').classList.remove('off');
     $('conn-text').textContent = '已连接';
     $('login').classList.add('hidden');
     $('app').classList.remove('hidden');
@@ -74,6 +84,10 @@ function connect() {
     send('channels.list');
     send('sessions.list');
     send('sessions.sync', { marks: state.marks, attach: state.current || undefined });
+    // 直达会话：?sid=xxx 自动打开该会话
+    const qp2 = new URLSearchParams(location.search);
+    const sid = qp2.get('sid');
+    if (sid && !state.current) openChat(sid);
   };
   ws.onmessage = (ev) => {
     let frame;
@@ -81,8 +95,9 @@ function connect() {
     handle(frame);
   };
   ws.onclose = () => {
-    $('conn-dot').classList.remove('on');
-    $('conn-text').textContent = '已断开，5s 后重连…';
+    $('conn-pill').classList.remove('on');
+    $('conn-pill').classList.add('off');
+    $('conn-text').textContent = '重连中…';
     setTimeout(connect, 5000);
   };
   ws.onerror = () => {};
@@ -107,10 +122,7 @@ function handle(f) {
       break;
     }
     case 'sessions': {
-      for (const it of f.sessions) {
-        const s = sessionOf(it.session_id);
-        Object.assign(s, it);
-      }
+      for (const it of f.sessions) Object.assign(sessionOf(it.session_id), it);
       renderSessionList();
       break;
     }
@@ -176,7 +188,6 @@ function onSessionReady(f) {
   if (!s.title) s.title = '会话 ' + f.session_id.slice(0, 12);
   renderSessionList();
   if (f.echo && f.echo.startsWith('new:')) {
-    // created via UI: switch to it
     state.current = f.session_id;
     renderSessionList();
     openChat(f.session_id);
@@ -193,12 +204,7 @@ function openChat(sid) {
   $('chat-input').classList.remove('hidden');
   $('messages').innerHTML = '';
   refreshHead();
-  // (re)attach via takeover; server replies history + session_ready
-  const echo = send('new_session', {
-    session_id: sid,
-    permission_mode: s.permission_mode,
-  });
-  // remember this echo → the session_ready from takeover is for us
+  const echo = send('new_session', { session_id: sid, permission_mode: s.permission_mode });
   state.attachEcho = echo;
 }
 
@@ -209,14 +215,12 @@ function refreshHead() {
   $('chat-meta').textContent = (s.backend === 'codex' ? 'codex' : 'claude') +
     ' · ' + (s.channel || '机器默认') + (s.model ? ' / ' + s.model : '') +
     (s.turn_active ? ' · 运行中' : '');
-  // permission select
   const opts = PERM_OPTIONS[s.backend === 'codex' ? 'codex' : 'claude'];
-  $('perm-select').innerHTML = opts.map(([v, l]) =>
-    '<option value="' + v + '"' + (v === s.permission_mode ? ' selected' : '') + '>' + l + '</option>').join('');
-  // channel select
-  const chans = [['', '机器默认'], ...state.channels.map((c) => [c.name, c.label || c.name])];
-  $('chan-select').innerHTML = chans.map(([v, l]) =>
-    '<option value="' + v + '"' + (v === (s.channel || '') ? ' selected' : '') + '>' + l + '</option>').join('');
+  $('perm-select').innerHTML = opts.map((o) =>
+    '<option value="' + o[0] + '"' + (o[0] === s.permission_mode ? ' selected' : '') + '>' + o[1] + '</option>').join('');
+  const chans = [['', '机器默认']].concat(state.channels.map((c) => [c.name, c.label || c.name]));
+  $('chan-select').innerHTML = chans.map((o) =>
+    '<option value="' + o[0] + '"' + (o[0] === (s.channel || '') ? ' selected' : '') + '>' + o[1] + '</option>').join('');
   $('model-input').value = s.model || '';
   $('stop-btn').classList.toggle('hidden', !s.turn_active);
   $('send-btn').disabled = !!s.turn_active;
@@ -225,59 +229,39 @@ function refreshHead() {
 function renderSessionList() {
   const box = $('session-list');
   box.innerHTML = '';
-  const items = [...state.sessions.values()].sort((a, b) => (b.last_msg_ts || b.created_at || 0) - (a.last_msg_ts || a.created_at || 0));
+  const items = Array.from(state.sessions.values()).sort((a, b) => (b.last_msg_ts || b.created_at || 0) - (a.last_msg_ts || a.created_at || 0));
   for (const s of items) {
-    const el = document.createElement('div');
-    el.className = 'session-item' + (s.session_id === state.current ? ' active' : '');
-    const t = document.createElement('div');
-    t.className = 't';
-    t.textContent = s.title || ('会话 ' + s.session_id.slice(0, 12));
-    const m = document.createElement('div');
-    m.className = 'm';
-    const b1 = document.createElement('span');
-    b1.className = 'badge' + (s.backend === 'codex' ? ' codex' : '');
-    b1.textContent = s.backend === 'codex' ? 'codex' : 'claude';
-    m.appendChild(b1);
-    if (s.queued) {
-      const bq = document.createElement('span');
-      bq.className = 'badge run';
-      bq.textContent = '排队中';
-      m.appendChild(bq);
-    } else if (s.turn_active) {
-      const br = document.createElement('span');
-      br.className = 'badge run';
-      br.textContent = '运行中';
-      m.appendChild(br);
-    }
-    const bm = document.createElement('span');
-    bm.className = 'muted';
-    bm.textContent = s.model || s.channel || '';
-    m.appendChild(bm);
-    el.appendChild(t); el.appendChild(m);
-    el.onclick = () => {
-      if (state.current !== s.session_id) openChat(s.session_id);
-    };
-    box.appendChild(el);
+    const row = el('div', 'sess' + (s.session_id === state.current ? ' active' : ''));
+    const dot = el('div', 'dot' + (s.backend === 'codex' ? ' codex' : ''), BACKEND_LETTER[s.backend] || 'C');
+    const info = el('div', 'info');
+    const t = el('div', 't', s.title || ('会话 ' + s.session_id.slice(0, 12)));
+    const m = el('div', 'm');
+    if (s.queued) m.appendChild(el('span', null, '排队中'));
+    else if (s.turn_active) m.appendChild(el('span', 'run', ''));
+    m.appendChild(el('span', null, s.model || s.channel || ''));
+    info.appendChild(t); info.appendChild(m);
+    row.appendChild(dot); row.appendChild(info);
+    row.onclick = () => { if (state.current !== s.session_id) openChat(s.session_id); };
+    box.appendChild(row);
   }
 }
 
 function appendBlock(sid, role, text) {
   const box = $('messages');
   if (state.current !== sid) return null;
-  const el = document.createElement('div');
-  el.className = 'msg ' + role;
-  el.textContent = text;
-  box.appendChild(el);
+  const wrap = el('div', 'msg-wrap ' + role);
+  const m = el('div', 'msg ' + role, text);
+  wrap.appendChild(m);
+  box.appendChild(wrap);
   box.scrollTop = box.scrollHeight;
-  return el;
+  return m;
 }
 
 function appendSys(sid, text) {
   if (state.current !== sid) return;
-  const el = document.createElement('div');
-  el.className = 'msg sys';
-  el.textContent = text;
-  $('messages').appendChild(el);
+  const wrap = el('div', 'msg-wrap sys');
+  wrap.appendChild(el('div', 'msg sys', text));
+  $('messages').appendChild(wrap);
 }
 
 function closeStreaming() {
@@ -292,7 +276,7 @@ function onUserMsg(f) {
   closeStreaming();
   appendBlock(f.session_id, 'user', f.text);
   const s = sessionOf(f.session_id);
-  s.title = f.text.split('\\n')[0].slice(0, 24);
+  s.title = f.text.split('\n')[0].slice(0, 24);
   s.turn_active = true;
   renderSessionList(); refreshHead();
 }
@@ -308,9 +292,10 @@ function onCcMsg(f) {
 function onDelta(f) {
   if (state.current !== f.session_id) return;
   if (!state.streaming) {
-    state.streaming = document.createElement('div');
-    state.streaming.className = 'msg cc streaming';
-    $('messages').appendChild(state.streaming);
+    const wrap = el('div', 'msg-wrap cc');
+    state.streaming = el('div', 'msg cc streaming');
+    wrap.appendChild(state.streaming);
+    $('messages').appendChild(wrap);
   }
   state.streaming.textContent += f.text;
   $('messages').scrollTop = $('messages').scrollHeight;
@@ -319,11 +304,16 @@ function onDelta(f) {
 function onThinking(f) {
   if (state.current !== f.session_id) return;
   if (!state.thinking) {
-    state.thinking = document.createElement('div');
-    state.thinking.className = 'thinking';
+    state.thinking = el('div', 'thinking');
+    const dots = el('span', 'dots');
+    dots.appendChild(el('i'));
+    dots.appendChild(el('i'));
+    dots.appendChild(el('i'));
+    state.thinking.appendChild(dots);
+    state.thinking.appendChild(el('span', 'tk-text'));
     $('messages').appendChild(state.thinking);
   }
-  state.thinking.textContent = '🤔 思考中… ' + f.tokens + ' tokens';
+  state.thinking.querySelector('.tk-text').textContent = '思考中 · ' + f.tokens + ' tokens';
   $('messages').scrollTop = $('messages').scrollHeight;
 }
 
@@ -373,41 +363,35 @@ function onAborted(f) {
 }
 
 // ---------- ask cards ----------
+const ICON_LOCK = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>';
+const ICON_QUESTION = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M6 6a2 2 0 1 1 3 1.5c-.8.5-1 .9-1 1.7M8 12.2v.1"/></svg>';
+
 function onAsk(f) {
   if (state.current !== f.session_id) return;
-  const card = document.createElement('div');
-  card.className = 'ask-card';
+  const card = el('div', 'ask-card');
   card.dataset.askId = f.ask_id;
-  const h = document.createElement('h4');
-  h.textContent = f.kind === 'question' ? '❓ 需要你回答' : '🔐 权限请求：' + f.tool_name;
+  const h = el('h4');
+  h.innerHTML = (f.kind === 'question' ? ICON_QUESTION : ICON_LOCK) + '<span></span>';
+  h.querySelector('span').textContent = f.kind === 'question' ? '需要你回答' : '权限请求 · ' + f.tool_name;
   card.appendChild(h);
   if (f.kind === 'permission') {
-    const pre = document.createElement('div');
-    pre.className = 'pre';
-    pre.textContent = JSON.stringify(f.input, null, 1);
-    card.appendChild(pre);
+    card.appendChild(el('div', 'pre', JSON.stringify(f.input, null, 1)));
   }
-  const actions = document.createElement('div');
-  actions.className = 'ask-actions';
+  const actions = el('div', 'ask-actions');
   if (f.kind === 'question') {
-    // build answer UI: questions[{question, header, options[{label,description}], multiSelect}]
     const answers = {};
     const qs = (f.input && f.input.questions) || [];
     qs.forEach((q, qi) => {
-      const w = document.createElement('div');
-      w.className = 'ask-q';
-      const qt = document.createElement('div');
-      qt.className = 'qtext';
-      qt.textContent = (q.header ? q.header + ' — ' : '') + (q.question || '');
-      w.appendChild(qt);
-      q.options.forEach((o) => {
-        const lab = document.createElement('label');
+      const w = el('div', 'ask-q');
+      w.appendChild(el('div', 'qtext', (q.header ? q.header + ' — ' : '') + (q.question || '')));
+      (q.options || []).forEach((o) => {
+        const lab = el('label');
         const inp = document.createElement('input');
         inp.type = q.multiSelect ? 'checkbox' : 'radio';
         inp.name = 'askq-' + f.ask_id + '-' + qi;
         inp.value = o.label;
         inp.onchange = () => {
-          const picked = [...w.querySelectorAll('input:checked')].map((x) => x.value);
+          const picked = Array.from(w.querySelectorAll('input:checked')).map((x) => x.value);
           if (q.multiSelect) answers[q.question] = picked;
           else if (picked.length) answers[q.question] = picked[0];
         };
@@ -417,36 +401,28 @@ function onAsk(f) {
       });
       card.appendChild(w);
     });
-    const ok = document.createElement('button');
-    ok.className = 'primary';
-    ok.textContent = '提交回答';
+    const ok = el('button', 'btn primary', '提交回答');
     ok.onclick = () => {
       if (!Object.keys(answers).length) { toast('请先选择答案', 'err'); return; }
-      const updatedInput = { ...f.input, answers };
+      const updatedInput = Object.assign({}, f.input, { answers });
       send('ask_reply', { session_id: f.session_id, ask_id: f.ask_id, behavior: 'allow', updatedInput });
       markAskAnswered(card);
     };
     actions.appendChild(ok);
-    const later = document.createElement('button');
-    later.className = 'ghost';
-    later.textContent = '拒绝（模型转纯文本）';
+    const later = el('button', 'btn ghost', '拒绝');
     later.onclick = () => {
       send('ask_reply', { session_id: f.session_id, ask_id: f.ask_id, behavior: 'deny', message: 'denied by user' });
       markAskAnswered(card);
     };
     actions.appendChild(later);
   } else {
-    const allow = document.createElement('button');
-    allow.className = 'primary';
-    allow.textContent = '允许';
+    const allow = el('button', 'btn primary', '允许');
     allow.onclick = () => {
       send('ask_reply', { session_id: f.session_id, ask_id: f.ask_id, behavior: 'allow' });
       markAskAnswered(card);
     };
     actions.appendChild(allow);
-    const deny = document.createElement('button');
-    deny.className = 'danger';
-    deny.textContent = '拒绝';
+    const deny = el('button', 'btn ghost', '拒绝');
     deny.onclick = () => {
       send('ask_reply', { session_id: f.session_id, ask_id: f.ask_id, behavior: 'deny', message: 'denied by user' });
       markAskAnswered(card);
@@ -461,7 +437,7 @@ function onAsk(f) {
 
 function markAskAnswered(card) {
   card.classList.add('ask-answered');
-  card.querySelectorAll('button, input').forEach((x) => (x.disabled = true));
+  card.querySelectorAll('button, input').forEach((x) => { x.disabled = true; });
   state.asks.delete(card.dataset.askId);
 }
 
@@ -489,22 +465,27 @@ function doSend() {
   if (!text) return;
   const s = sessionOf(state.current);
   $('input').value = '';
+  autoGrow();
   send('send', { session_id: state.current, text, permission_mode: s.permission_mode });
+}
+
+function autoGrow() {
+  const ta = $('input');
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 180) + 'px';
 }
 
 $('send-btn').onclick = doSend;
 $('input').addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSend(); }
-  else if (e.key === 'Enter') {
-    // allow newline via Shift+Enter naturally
-  }
 });
+$('input').addEventListener('input', autoGrow);
 $('stop-btn').onclick = () => {
   if (state.current) send('stop', { session_id: state.current });
 };
 $('drop-btn').onclick = () => {
   if (!state.current) return;
-  if (!confirm('删除会话 ' + state.current + '？（本地历史保留，服务端记录清除）')) return;
+  if (!confirm('删除会话 ' + state.current + '？（服务端记录清除）')) return;
   const sid = state.current;
   send('drop_session', { session_id: sid });
   state.sessions.delete(sid);
@@ -524,9 +505,7 @@ $('perm-select').onchange = () => {
 };
 $('apply-model-btn').onclick = () => {
   if (!state.current) return;
-  const channel = $('chan-select').value;
-  const model = $('model-input').value.trim();
-  send('set_model', { session_id: state.current, channel, model });
+  send('set_model', { session_id: state.current, channel: $('chan-select').value, model: $('model-input').value.trim() });
 };
 
 // ---------- new session modal ----------
@@ -546,23 +525,23 @@ $('new-session-btn').onclick = () => {
 $('nm-backend').onchange = refreshNewPerm;
 function refreshNewPerm() {
   const opts = PERM_OPTIONS[$('nm-backend').value === 'codex' ? 'codex' : 'claude'];
-  $('nm-perm').innerHTML = opts.map(([v, l]) => '<option value="' + v + '">' + l + '</option>').join('');
+  $('nm-perm').innerHTML = opts.map((o) => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
 }
 $('nm-cancel').onclick = () => $('new-modal').classList.add('hidden');
 $('nm-ok').onclick = () => {
   const sid = $('nm-sid').value.trim();
-  const backend = $('nm-backend').value;
-  const channel = $('nm-channel').value;
-  const model = $('nm-model').value.trim();
-  const permission_mode = $('nm-perm').value;
   state.echo += 1;
   const echo = 'new:' + state.echo;
   $('new-modal').classList.add('hidden');
-  if (sid) {
-    // may be a takeover of an existing session (same semantics)
-    sessionOf(sid);
-  }
-  send('new_session', { session_id: sid || undefined, backend, channel, model, permission_mode, echo });
+  if (sid) sessionOf(sid);
+  send('new_session', {
+    session_id: sid || undefined,
+    backend: $('nm-backend').value,
+    channel: $('nm-channel').value,
+    model: $('nm-model').value.trim(),
+    permission_mode: $('nm-perm').value,
+    echo,
+  });
   if (sid) openChat(sid);
 };
 
@@ -578,42 +557,33 @@ function renderChannelList() {
   const box = $('chan-list');
   box.innerHTML = '';
   for (const c of state.channels) {
-    const item = document.createElement('div');
-    item.className = 'chan-item';
-    const grow = document.createElement('div');
-    grow.className = 'grow';
-    const name = document.createElement('div');
-    name.className = 'name';
-    name.textContent = (c.label || c.name) + ' (' + c.name + ')';
-    if (c.default) {
-      const tag = document.createElement('span');
-      tag.className = 'tag-default';
-      tag.textContent = '默认';
-      name.appendChild(document.createTextNode(' '));
-      name.appendChild(tag);
-    }
-    const detail = document.createElement('div');
-    detail.className = 'detail';
-    detail.textContent = c.base_url + ' · ' + c.protocol + (c.model ? ' · ' + c.model : '') +
-      (c.key_tail ? ' · key尾号' + c.key_tail : ' · 无key') + ' · models:' + ((c.models || []).length || '-');
+    const item = el('div', 'chan-item');
+    const grow = el('div', 'grow');
+    const name = el('div', 'name');
+    name.appendChild(document.createTextNode((c.label || c.name)));
+    const tagName = el('span', 'tag gray', c.name);
+    name.appendChild(tagName);
+    if (c.default) name.appendChild(el('span', 'tag', '默认'));
+    const detail = el('div', 'detail',
+      c.base_url + ' · ' + c.protocol + '/' + (c.wire_api || 'responses') + (c.model ? ' · ' + c.model : '') +
+      (c.key_tail ? ' · key…' + c.key_tail : ' · 无key') + ' · models:' + ((c.models || []).length || '-'));
     grow.appendChild(name); grow.appendChild(detail);
     item.appendChild(grow);
-    const mk = (label, fn, cls = 'ghost') => {
-      const b = document.createElement('button');
-      b.className = cls;
-      b.textContent = label;
+    const mk = (label, fn, cls) => {
+      const b = el('button', 'btn ' + (cls || 'ghost'), label);
       b.onclick = fn;
       item.appendChild(b);
     };
-    mk('设为默认', () => send('channels.set_default', { channel: c.name }));
+    mk('默认', () => send('channels.set_default', { channel: c.name }));
     mk('测试', () => send('channel.test', { channel: c.name, model: c.model }));
     mk('编辑', () => openChanForm(c));
-    mk('删除', () => { if (confirm('删除渠道 ' + c.name + '？')) send('channels.delete', { channel: c.name }); }, 'danger');
+    mk('删', () => { if (confirm('删除渠道 ' + c.name + '？')) send('channels.delete', { channel: c.name }); }, 'danger');
     box.appendChild(item);
   }
 }
 
-function openChanForm(c = null) {
+function openChanForm(c) {
+  c = c || null;
   state.chanModal.editing = c ? c.name : null;
   $('chan-form-title').textContent = c ? '编辑渠道：' + c.name : '新增渠道';
   $('cf-name').value = c ? c.name : '';
@@ -621,6 +591,7 @@ function openChanForm(c = null) {
   $('cf-label').value = c ? (c.label || '') : '';
   $('cf-base').value = c ? (c.base_url || '') : '';
   $('cf-protocol').value = c ? (c.protocol || 'auto') : 'auto';
+  $('cf-wire').value = c ? (c.wire_api || 'responses') : 'responses';
   $('cf-model').value = c ? (c.model || '') : '';
   $('cf-key').value = '';
   $('cf-key').placeholder = c && c.key_tail ? '已配置（尾号' + c.key_tail + '），留空保留' : 'API Key';
@@ -641,6 +612,7 @@ $('cf-save').onclick = () => {
     label: $('cf-label').value.trim(),
     base_url: $('cf-base').value.trim(),
     protocol: $('cf-protocol').value,
+    wire_api: $('cf-wire').value,
     model: $('cf-model').value.trim(),
     api_key: $('cf-key').value.trim(),
     api_key_env: $('cf-env').value.trim(),
@@ -656,12 +628,15 @@ $('cf-models').onclick = () => {
   send('channel.models', { channel: state.chanModal.editing || $('cf-name').value.trim() });
 };
 function onChannelTest(f) {
-  if (f.ok) toast('渠道 ' + f.channel + ' 连通 ✓ ' + f.model + ' ' + f.latency_ms + 'ms', 'ok');
+  if (f.ok) toast('渠道 ' + f.channel + ' 连通 ✓ ' + (f.model || '') + ' ' + f.latency_ms + 'ms', 'ok');
   else toast('渠道 ' + f.channel + ' 测试失败：' + f.error, 'err');
 }
 
 // ---------- init ----------
 (function init() {
+  // 可分享的直达链接：http://host/?token=... 直接进入控制台
+  const qp = new URLSearchParams(location.search);
+  if (qp.get('token')) state.token = qp.get('token');
   if (state.token) {
     $('token-input').value = state.token;
     connect();
