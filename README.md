@@ -46,23 +46,34 @@ codex 后端需要 `codex` CLI（`npm i -g @openai/codex`，或 `CODEX_API_KEY` 
 | 值 | 用途 |
 |---|---|
 | `anthropic` | claude 后端（/v1/messages） |
-| `openai` | codex 后端（/v1/chat/completions） |
-| `auto` | 双协议（如龙虾），两个后端都可选 |
+| `openai` | codex 后端（/v1/responses 或 /v1/chat/completions，由 wire_api 决定） |
+| `auto` | 双协议（如龙虾托管版），两个后端都可选 |
 
-### 对接龙虾（ClawBrain OpenClaw）
+### 对接龙虾（OpenClaw / ClawBrain）
 
-`channels.json` 已内置：
+龙虾 = [OpenClaw](https://github.com/openclaw/openclaw)：开源自托管 AI Agent 网关
+（IM 渠道 → 编程 Agent），ClawBrain(clawbrain.dev) 是其托管商业版。
+协议研究全文见 [docs/openclaw.md](docs/openclaw.md)。
+
+`channels.json` 内置两个渠道模板：
 
 ```json
-{ "name": "longxia", "label": "龙虾 (ClawBrain)",
+{ "name": "longxia",  "label": "龙虾 (ClawBrain 托管)",
   "base_url": "https://api.clawbrain.dev/v1", "protocol": "auto",
-  "model": "", "models": [], "api_key_env": "CWS_APIKEY_LONGXIA" }
+  "wire_api": "responses", "api_key_env": "CWS_APIKEY_LONGXIA" }
+{ "name": "openclaw", "label": "OpenClaw 龙虾（自建 Gateway）",
+  "base_url": "http://127.0.0.1:18789/v1", "protocol": "openai",
+  "wire_api": "responses", "model": "openclaw/default",
+  "api_key_env": "CWS_APIKEY_OPENCLAW",
+  "http_headers": { "x-openclaw-session-key": "{session_id}" } }
 ```
 
-把你的 key 放进 `secrets.json` 的 `api_keys.longxia`（或导出 `CWS_APIKEY_LONGXIA`），
-然后在 WebUI「上游渠道」里点「测试」验证连通、「拉取模型列表」拿到可用模型。
-龙虾兼容 OpenAI/Anthropic 双协议：claude 会话走 /v1/messages，codex 会话走
-/chat/completions，同一把 key 两后端通用。
+把你的 key 放进 `secrets.json` 的 `api_keys.longxia`（或导出
+`CWS_APIKEY_LONGXIA`），WebUI「上游渠道」里「测试」/「拉取模型列表」即可验证。
+**注意：codex ≥0.135 已移除 chat completions 后端（wire_api 必须为 responses）**，
+OpenClaw 的 `/v1/responses` 正好对齐；cws 适配器默认已用 responses，
+并通过 `x-openclaw-session-key` 头（占位符 `{session_id}` 自动替换为会话 uuid）
+在 OpenClaw 侧保持会话连续。已用真实 codex 0.154.0 端到端实测通过。
 
 ## Codex 后端适配要点
 

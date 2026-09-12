@@ -282,6 +282,7 @@ export class Bridge {
           chans.push({
             name: ch.name, label: ch.label || ch.name,
             base_url: ch.base_url || '', protocol: ch.protocol || 'anthropic',
+            wire_api: ch.wire_api || 'responses', http_headers: ch.http_headers || {},
             model: ch.model || '', models: ch.models || [],
             key_tail: key.slice(-4),
             default: ch.name === channelState.defaultChannel,
@@ -581,9 +582,13 @@ export class Bridge {
       label: String(params.label || '').trim() || name,
       base_url: baseUrl,
       protocol,
+      wire_api: params.wire_api === 'chat' ? 'chat' : 'responses',
       api_key: String(params.api_key || '').trim(),
       model: String(params.model || '').trim(),
     };
+    if (params.http_headers && typeof params.http_headers === 'object') {
+      entry.http_headers = params.http_headers;
+    }
     if (params.api_key_env) entry.api_key_env = String(params.api_key_env).trim();
     let found = false;
     for (let i = 0; i < API_CHANNELS.length; i++) {
@@ -591,6 +596,8 @@ export class Bridge {
       if (ch && ch.name === name) {
         if (!entry.api_key && ch.api_key) entry.api_key = ch.api_key;
         if (!entry.api_key_env && ch.api_key_env) entry.api_key_env = ch.api_key_env;
+        if (!params.wire_api && ch.wire_api) entry.wire_api = ch.wire_api;
+        if (!entry.http_headers && ch.http_headers) entry.http_headers = ch.http_headers;
         API_CHANNELS[i] = entry;
         found = true;
         break;
@@ -620,6 +627,33 @@ export class Bridge {
     await this._wsSend(ws, { post_type: 'channels_deleted', channel: name, removed, echo });
   }
 
+  /** Channel base_url may or may not include the trailing /v1 (anthropic
+   * convention omits it; OpenAI/OpenClaw convention includes it). Append the
+   * subpath accordingly: endsWith('/v1') ? base+sub : base+'/v1'+sub. */
+  _apiPath(base, sub) {
+    return base.replace(/\/+$/, '') + (base.replace(/\/+$/, '').endsWith('/v1') ? sub : '/v1' + sub);
+  }
+
+  /** One minimal probe request; returns {ok, status, latencyMs, error}. */
+  async _probeOnce(baseUrl, subpath, { method = 'POST', headers, body }) {
+    const url = this._apiPath(baseUrl.replace(/\/+$/, ''), subpath);
+    const t0 = now();
+    try {
+      const resp = await fetch(url, {
+        method, headers, body: body ? JSON.stringify(body) : undefined,
+        signal: AbortSignal.timeout(20000),
+      });
+      const text = await resp.text();
+      return {
+        ok: resp.status === 200, status: resp.status,
+        latencyMs: Math.round((now() - t0) * 1000),
+        error: resp.status === 200 ? '' : ('HTTP ' + resp.status + ': ' + text.slice(0, 200)),
+      };
+    } catch (e) {
+      return { ok: false, status: 0, latencyMs: 0, error: String(e).slice(0, 200) };
+    }
+  }
+
   async channelTest(ws, params, echo) {
     let ch = params.channel ? channelByName(params.channel) : null;
     if (!ch && channelState.defaultChannel) ch = channelByName(channelState.defaultChannel);
@@ -632,37 +666,41 @@ export class Bridge {
       });
       return;
     }
-    const url = ch.base_url.replace(/\/+$/, '') + '/v1/messages';
-    const headers = {
-      'content-type': 'application/json',
-      'anthropic-version': '2023-06-01',
-      'x-api-key': ch.api_key,
-      authorization: 'Bearer ' + ch.api_key,
-    };
-    const payload = {
-      model: model || 'ping', max_tokens: 8,
-      messages: [{ role: 'user', content: 'ping' }],
-    };
-    const t0 = now();
-    try {
-      const resp = await fetch(url, {
-        method: 'POST', headers, body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(20000),
-      });
-      const body = await resp.text();
-      await this._wsSend(ws, {
-        post_type: 'channel_test', ok: resp.status === 200,
-        channel: name, model, status: resp.status,
-        latency_ms: Math.round((now() - t0) * 1000),
-        error: resp.status === 200 ? '' : ('HTTP ' + resp.status + ': ' + body.slice(0, 200)),
-        echo,
-      });
-    } catch (e) {
-      await this._wsSend(ws, {
-        post_type: 'channel_test', ok: false, channel: name, model,
-        error: String(e).slice(0, 200), echo,
-      });
+    const base = ch.base_url.replace(/\/+$/, '');
+    const proto = ch.protocol || 'auto';
+    // OpenAI-protocol probe (chat completions) — OpenClaw gateway has no /v1/messages
+    const openaiProbe = () => this._probeOnce(base, '/chat/completions', {
+      headers: { 'content-type': 'application/json', authorization: 'Bearer ' + ch.api_key },
+      body: { model: model || 'ping', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] },
+    });
+    // Anthropic-protocol probe
+    const anthropicProbe = () => this._probeOnce(base, '/messages', {
+      headers: {
+        'content-type': 'application/json',
+        'anthropic-version': '2023-06-01',
+        'x-api-key': ch.api_key,
+        authorization: 'Bearer ' + ch.api_key,
+      },
+      body: { model: model || 'ping', max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] },
+    });
+    let result;
+    if (proto === 'anthropic') {
+      result = await anthropicProbe();
+    } else if (proto === 'openai') {
+      result = await openaiProbe();
+    } else {
+      // auto: OpenAI first, fall back to Anthropic on 404/405
+      result = await openaiProbe();
+      if (!result.ok && (result.status === 404 || result.status === 405)) {
+        result = await anthropicProbe();
+      }
     }
+    await this._wsSend(ws, {
+      post_type: 'channel_test', ok: result.ok,
+      channel: name, model, status: result.status,
+      latency_ms: result.latencyMs,
+      error: result.error, echo,
+    });
   }
 
   async channelModels(ws, params, echo) {
@@ -675,12 +713,13 @@ export class Bridge {
       });
       return;
     }
-    const url = ch.base_url.replace(/\/+$/, '') + '/v1/models';
-    const headers = {
-      'anthropic-version': '2023-06-01',
-      'x-api-key': ch.api_key,
-      authorization: 'Bearer ' + ch.api_key,
-    };
+    const url = this._apiPath(ch.base_url.replace(/\/+$/, ''), '/models');
+    const proto = ch.protocol || 'auto';
+    const headers = { authorization: 'Bearer ' + ch.api_key };
+    if (proto !== 'openai') {
+      headers['anthropic-version'] = '2023-06-01';
+      headers['x-api-key'] = ch.api_key;
+    }
     try {
       const resp = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
       const body = await resp.text();

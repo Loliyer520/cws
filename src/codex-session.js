@@ -62,8 +62,21 @@ export class CodexSession extends BaseSession {
         '-c', `model_providers.${pid}.name=${ch.label || ch.name || pid}`,
         '-c', `model_providers.${pid}.base_url=${ch.base_url || ''}`,
         '-c', `model_providers.${pid}.env_key=${envKey}`,
-        '-c', `model_providers.${pid}.wire_api=chat`,
+        '-c', `model_providers.${pid}.wire_api=${ch.wire_api === 'chat' ? 'chat' : 'responses'}`,
       );
+      // extra HTTP headers (TOML inline table); {session_id} -> this session's uuid.
+      // e.g. OpenClaw gateway: x-openclaw-session-key pins the agent session across turns.
+      if (ch.http_headers && typeof ch.http_headers === 'object') {
+        const entries = [];
+        for (const [h, v] of Object.entries(ch.http_headers)) {
+          const value = String(v).replaceAll('{session_id}', this.cli_uuid)
+            .replaceAll('\\', '\\\\').replaceAll('"', '\\"');
+          entries.push('"' + String(h).replaceAll('"', '\\"') + '" = "' + value + '"');
+        }
+        if (entries.length) {
+          args.push('-c', `model_providers.${pid}.http_headers={` + entries.join(', ') + '}');
+        }
+      }
     }
     if (this.model_name) args.push('--model', this.model_name);
     if (this.thread_id) {
@@ -174,6 +187,29 @@ export class CodexSession extends BaseSession {
         }
       }
     } else if (t === 'item.completed') {
+      // codex often emits the full text ONLY on item.completed (no started/updated)
+      if (itemType === 'agent_message' && item.text) {
+        const prev = this._itemText.get(itemId) || '';
+        if (item.text.length > prev.length) {
+          const delta = item.text.slice(prev.length);
+          this._itemText.set(itemId, item.text);
+          this.text_buf.push(delta);
+          await this.sendWs({ post_type: 'delta', session_id: this.id, text: delta });
+        } else if (!prev) {
+          this._itemText.set(itemId, item.text);
+        }
+      } else if (itemType === 'reasoning' && item.text) {
+        const prev = this._itemText.get(itemId) || '';
+        if (item.text.length > prev.length) {
+          this._itemText.set(itemId, item.text);
+          this.thinking_chars += item.text.length - prev.length;
+          this.last_activity = Date.now() / 1000;
+          await this.sendWs({
+            post_type: 'thinking', session_id: this.id,
+            tokens: Math.max(1, Math.round(this.thinking_chars / 4)),
+          });
+        }
+      }
       if (itemType === 'file_change') {
         const paths = ((item.changes || []).map((c) => c.path)).filter(Boolean).join(', ');
         if (paths) {

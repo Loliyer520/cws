@@ -61,3 +61,28 @@ scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴�
   claude 走 /v1/messages、codex 走 /v1/chat/completions（双协议）。
 - codex 真实多轮 resume：需 API 可用时复测 thread_id 续轮（逻辑已按 exec.md
   与源码实现，thread_id 落盘 sess.json）。
+
+## 六、OpenClaw(龙虾)协议研究与对接实测(2026-09-12 追加)
+
+- 身份确认:龙虾 = OpenClaw(github.com/openclaw/openclaw),开源自托管 AI Agent
+  网关;ClawBrain(clawbrain.dev,owl- key)为托管商业版。协议全文调研见
+  docs/openclaw.md(llms.txt 全量索引 + 源码逐字段核对)。
+- 三个协议层:Gateway WS 协议 v4(connect/hello-ok/req-res-event/RPC 族/device
+  token)、OpenAI 兼容 HTTP API(/v1/chat/completions、/v1/responses、
+  /v1/models、/v1/embeddings、/tools/invoke)、CLI 后端/ACP 机制。
+- **关键实测发现:codex 0.154.0 已移除 wire_api=chat**(启动即报
+  "wire_api = chat is no longer supported",必须 responses)→ cws 适配器与渠道
+  默认全部改为 responses;OpenClaw 的 /v1/responses 恰好对齐。
+- 渠道层协议感知落地:channel.test/channel.models 按 protocol 分流
+  (openai→chat completions+models/Bearer,anthropic→/v1/messages),base_url
+  尾部 /v1 有无两种约定自动适配;channels CRUD 支持 wire_api/http_headers 字段;
+  codex 适配器支持 TOML http_headers 下发({session_id} 占位符→会话 uuid,
+  用于 x-openclaw-session-key 维持 OpenClaw 侧会话)。
+- 本地 mock OpenResponses 网关验收:openai/auto 渠道测试 200、
+  /v1/models 拉取 openclaw+openclaw/default、真实 codex 0.154.0 端到端
+  (桥 codex 后端+openclaw 渠道→SSE→delta="2"→final.text="2",is_error=false)。
+- 期间按 codex 源码(codex-api/src/sse/responses.rs)修正两处:
+  (a) codex 只发 item.completed(无 started/updated)时的文本提取;
+  (b) SSE 事件序列须含带 role 的 output_item.added 与 output_item.done。
+- 回归:mock 验收 8/8 SUMMARY_OK(上文一~五节场景,改动后复跑通过)。
+

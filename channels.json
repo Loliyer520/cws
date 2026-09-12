@@ -34,12 +34,31 @@
     },
     {
       "name": "longxia",
-      "label": "龙虾 (ClawBrain)",
+      "label": "龙虾 (ClawBrain 托管)",
       "base_url": "https://api.clawbrain.dev/v1",
       "protocol": "auto",
+      "wire_api": "responses",
       "model": "",
-      "models": [],
+      "models": [
+        "claude-sonnet"
+      ],
       "api_key_env": "CWS_APIKEY_LONGXIA"
+    },
+    {
+      "name": "openclaw",
+      "label": "OpenClaw 龙虾（自建 Gateway）",
+      "base_url": "http://127.0.0.1:18789/v1",
+      "protocol": "openai",
+      "wire_api": "responses",
+      "model": "openclaw/default",
+      "models": [
+        "openclaw",
+        "openclaw/default"
+      ],
+      "api_key_env": "CWS_APIKEY_OPENCLAW",
+      "http_headers": {
+        "x-openclaw-session-key": "{session_id}"
+      }
     }
   ],
   "default_channel": ""
