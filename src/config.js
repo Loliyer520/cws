@@ -76,6 +76,12 @@ export const WEBUI_CFG = {
   dir: (cfg.webui && cfg.webui.dir) || 'webui',
 };
 
+// 远程网关（OpenClaw 等）：name -> { url, token, agent }
+export const GATEWAYS = cfg.gateways || {};
+export function gatewayByName(name) {
+  return GATEWAYS[name] || null;
+}
+
 export let API_CHANNELS = Array.isArray(cfg.api_channels) ? cfg.api_channels : [];
 // mutable default-channel holder (ESM import bindings are read-only; mutate state, not bindings)
 export const channelState = { defaultChannel: cfg.default_channel || '' };

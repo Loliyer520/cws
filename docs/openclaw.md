@@ -10,13 +10,14 @@
 (Claude Code、Codex、ACP agents),自带 ClawHub、Control UI、WebChat 等界面。
 **ClawBrain(clawbrain.dev)是它的托管商业版**(owl- 开头 key、模型如 claude-sonnet)。
 
-cws 与 OpenClaw 的对接有两条可行路径:
+cws 的对接定位(最终落地方案):
 
-1. **上游模型路径(已实现并实测)** — cws 的 codex 后端把 OpenClaw Gateway 当作
-   OpenAI 兼容上游:codex exec + wire_api=responses 直连 /v1/responses,
-   x-openclaw-session-key 头维持会话。**已用真实 codex 0.154.0 端到端跑通。**
-2. **原生 Gateway WS 协议路径(调研完成,未实现)** — cws 作为 OpenClaw 的
-   Gateway client 接入,获得 sessions/talk/approvals 全套 RPC。协议细节见 §2。
+- **OpenClaw = 平级后端**。cws 用官方 `@openclaw/gateway-client` 走 **Gateway WS
+  协议 v4** 直连远程网关,遥控其会话:chat.send 发消息、chat 事件流(delta/final)、
+  session.approval → approval.resolve 审批、sessions.patch 切模型/权限、chat.history
+  拉历史。**已用本地 mock 网关端到端实测通过(9.openclaw_basic)。**
+- 原「上游模型路径」(codex → OpenClaw /v1/responses)仍可用作把 OpenClaw 当模型端点,
+  但那不是「遥控」,仅作参考,见 §1。
 
 ## 1. HTTP API(上游模型路径用这层)
 

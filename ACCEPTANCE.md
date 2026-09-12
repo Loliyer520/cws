@@ -86,3 +86,19 @@ scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴�
   (b) SSE 事件序列须含带 role 的 output_item.added 与 output_item.done。
 - 回归:mock 验收 8/8 SUMMARY_OK(上文一~五节场景,改动后复跑通过)。
 
+
+## 七、OpenClaw 后端（远程网关遥控）实测（2026-09-12 追加）
+
+- 架构纠正：OpenClaw 从「上游渠道」改为**平级后端**（本地 claude/codex + 远程 openclaw）。
+- 实现：依赖官方 @openclaw/gateway-client（Gateway WS 协议 v4），新增
+  src/gateway.js（共享连接管理）+ src/openclaw-session.js（会话后端）。
+  精确字段取自 @openclaw/gateway-protocol 的 protocol.schema.json（965 定义）。
+- 映射：chat.send→发消息；chat 事件(deltaText/state=delta|final|aborted|error)→
+  cws delta/final/turn_aborted；session.approval(pending)+approval.resolve→ask 卡片；
+  sessions.patch→模型/权限；chat.history→历史；sessions.abort→停止。
+- mock 网关实测（scripts/mock-openclaw-gateway.mjs，最小 v4 协议）：
+  new_session(backend=openclaw)→session_ready→send "1+1"→Δ2→final="2"；
+  send "用bash…"→session.approval(pending,kind=exec)→ask→allow→approval.resolve→
+  Δ"工具已执行"→final。全链路 PASS。
+- 回归：claude/codex mock 验收 8/8 通过（wsclient.mjs 新增 9.openclaw_basic）。
+

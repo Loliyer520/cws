@@ -226,10 +226,26 @@ async function scCodexStop() {
   c.close();
 }
 
+async function scOpenclaw() {
+  const c = new Client(URL, TOKEN);
+  await c.connect();
+  const sid = 'acc-openclaw-1';
+  c.act('new_session', { session_id: sid, backend: 'openclaw', gateway: 'openclaw' });
+  let ev = await c.wait((x) => x.post_type === 'session_ready' && x.session_id === sid, 40);
+  if (!ev) { rec('9.openclaw_basic', false, 'no session_ready'); c.close(); return; }
+  const e2 = c.act('send', { session_id: sid, text: '1+1只回答数字' });
+  ev = await c.wait((x) => (x.post_type === 'final' || x.post_type === 'error') && x.echo === e2, 120);
+  const ok = ev && ev.post_type === 'final' && /2/.test(ev.text || '');
+  rec('9.openclaw_basic', ok, ev ? 'final.text=' + JSON.stringify(ev.text) : 'timeout');
+  await dropAll(c, [sid]);
+  c.close();
+}
+
 const SCENARIOS = {
-  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop],
+  all: [scBasic, scParallel, scBashDeny, scAskq, scStopResume, scMisc, scCodexBasic, scCodexStop, scOpenclaw],
   basic: [scBasic], parallel: [scParallel], bash_deny: [scBashDeny], askq: [scAskq],
   stop: [scStopResume], misc: [scMisc], codex_basic: [scCodexBasic], codex_stop: [scCodexStop],
+  openclaw: [scOpenclaw],
 };
 
 (async () => {

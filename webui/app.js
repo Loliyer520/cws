@@ -21,9 +21,10 @@ const state = {
 const PERM_OPTIONS = {
   claude: [['default', '默认 · 按需询问'], ['acceptEdits', '接受编辑'], ['bypassPermissions', '完全允许'], ['plan', '只读规划']],
   codex: [['read-only', '只读'], ['workspace-write', '工作区可写'], ['full-auto', '绕过审批与沙箱'], ['danger-full-access', '完全访问']],
+  openclaw: [['read-only', '只读'], ['guarded', '守护'], ['workspace', '工作区'], ['full', '完全']],
 };
 
-const BACKEND_LETTER = { claude: 'C', codex: 'X' };
+const BACKEND_LETTER = { claude: 'C', codex: 'X', openclaw: 'O' };
 
 // ---------- helpers ----------
 function toast(text, kind = '') {
@@ -212,10 +213,10 @@ function refreshHead() {
   const s = state.current ? state.sessions.get(state.current) : null;
   if (!s) return;
   $('chat-title').textContent = s.title || ('会话 ' + s.session_id.slice(0, 12));
-  $('chat-meta').textContent = (s.backend === 'codex' ? 'codex' : 'claude') +
-    ' · ' + (s.channel || '机器默认') + (s.model ? ' / ' + s.model : '') +
+  $('chat-meta').textContent = s.backend +
+    (s.channel ? ' · ' + s.channel : '') + (s.model ? ' / ' + s.model : '') +
     (s.turn_active ? ' · 运行中' : '');
-  const opts = PERM_OPTIONS[s.backend === 'codex' ? 'codex' : 'claude'];
+  const opts = PERM_OPTIONS[s.backend] || PERM_OPTIONS.claude;
   $('perm-select').innerHTML = opts.map((o) =>
     '<option value="' + o[0] + '"' + (o[0] === s.permission_mode ? ' selected' : '') + '>' + o[1] + '</option>').join('');
   const chans = [['', '机器默认']].concat(state.channels.map((c) => [c.name, c.label || c.name]));
@@ -524,8 +525,10 @@ $('new-session-btn').onclick = () => {
 };
 $('nm-backend').onchange = refreshNewPerm;
 function refreshNewPerm() {
-  const opts = PERM_OPTIONS[$('nm-backend').value === 'codex' ? 'codex' : 'claude'];
+  const b = $('nm-backend').value;
+  const opts = PERM_OPTIONS[b] || PERM_OPTIONS.claude;
   $('nm-perm').innerHTML = opts.map((o) => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
+  $('nm-gw-box').classList.toggle('hidden', b !== 'openclaw');
 }
 $('nm-cancel').onclick = () => $('new-modal').classList.add('hidden');
 $('nm-ok').onclick = () => {
@@ -540,6 +543,8 @@ $('nm-ok').onclick = () => {
     channel: $('nm-channel').value,
     model: $('nm-model').value.trim(),
     permission_mode: $('nm-perm').value,
+    gateway: $('nm-gateway').value.trim(),
+    remote_key: $('nm-remote').value.trim(),
     echo,
   });
   if (sid) openChat(sid);

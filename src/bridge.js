@@ -5,6 +5,7 @@ import path from 'node:path';
 import { BaseSession } from './base-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
+import { OpenclawSession } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
   IDLE_TIMEOUT, API_CHANNELS, channelState, setDefaultChannel, channelByName,
@@ -16,10 +17,12 @@ import { log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './ut
 export function makeSession(bridge, sid, ws, opts = {}) {
   const backend = opts.backend || null;
   if (backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
+  if (backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
   if (backend === 'claude') return new ClaudeSession(bridge, sid, ws, opts);
   // revive: read backend from sess.json meta
   const meta = loadSessMetaRaw(sid);
   if (meta.backend === 'codex') return new CodexSession(bridge, sid, ws, opts);
+  if (meta.backend === 'openclaw') return new OpenclawSession(bridge, sid, ws, opts);
   return new ClaudeSession(bridge, sid, ws, opts);
 }
 
@@ -87,8 +90,8 @@ export class Bridge {
       this.sessions.set(sid, s);
       s.pending_echo = echo;
       try {
-        if (s.backend === 'codex') {
-          await this._announceCodexReady(s, echo);
+        if (s.backend !== 'claude') {
+          await this._announceReady(s, echo);
         } else {
           await s.start();
         }
@@ -105,7 +108,7 @@ export class Bridge {
     }
   }
 
-  async _announceCodexReady(s, echo) {
+  async _announceReady(s, echo) {
     s.ready_announced = true;
     await s.sendWs({
       post_type: 'session_ready', session_id: s.id,
@@ -398,7 +401,8 @@ export class Bridge {
     }
     const model = params.model || null;
     const backend = params.backend === 'codex' ? 'codex'
-      : (params.backend === 'claude' ? 'claude' : null);
+      : (params.backend === 'openclaw' ? 'openclaw'
+        : (params.backend === 'claude' ? 'claude' : null));
     const existing = this.sessions.get(sid);
     if (existing && !existing.closed) {
       // same-name reconnect = takeover: rebind ws, resync identity, never restart
@@ -460,6 +464,7 @@ export class Bridge {
       const s = makeSession(this, sid, ws, {
         resume: true, permissionMode: params.permission_mode,
         channel, model, backend,
+        gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
       });
       this.sessions.set(sid, s);
       s.ready_announced = true;
@@ -495,12 +500,13 @@ export class Bridge {
     }
     const s = makeSession(this, sid, ws, {
       permissionMode: params.permission_mode, channel, model, backend,
+      gateway: params.gateway, remoteKey: params.remote_key, agentId: params.agent,
     });
     this.sessions.set(sid, s);
     s.pending_echo = echo;
     try {
-      if (s.backend === 'codex') {
-        await this._announceCodexReady(s, echo);
+      if (s.backend !== 'claude') {
+        await this._announceReady(s, echo);
         s.pending_echo = null;
       } else {
         await s.start();

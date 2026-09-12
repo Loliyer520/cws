@@ -86,9 +86,16 @@
     <input id="nm-sid" class="ctrl full" placeholder="mychat">
     <label>后端</label>
     <select id="nm-backend" class="ctrl full">
-      <option value="claude">claude CLI · Anthropic 渠道</option>
-      <option value="codex">codex CLI · OpenAI 渠道</option>
+      <option value="claude">claude CLI · 本地</option>
+      <option value="codex">codex CLI · 本地</option>
+      <option value="openclaw">openclaw · 远程 OpenClaw 网关</option>
     </select>
+    <div id="nm-gw-box" class="hidden">
+      <label>网关（config.json 的 gateways）</label>
+      <input id="nm-gateway" class="ctrl full" value="openclaw">
+      <label>远程会话 key<span class="muted">（留空=新建/自动）</span></label>
+      <input id="nm-remote" class="ctrl full" placeholder="如 agent:main:xxx">
+    </div>
     <label>渠道</label>
     <select id="nm-channel" class="ctrl full"></select>
     <label>模型<span class="muted">（留空=渠道默认）</span></label>
