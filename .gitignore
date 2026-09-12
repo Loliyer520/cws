@@ -7,3 +7,7 @@ __pycache__/
 venv/
 workspaces/
 restart_bridge.log
+node_modules/
+package-lock.json
+test_results.json
+.jspace/

@@ -1,62 +1,63 @@
-# cc-bridge @64 验收实测记录（2026-09-07）
+# cws Node v2 验收实测记录（2026-09-12）
 
-环境：<your-server>，claude CLI 2.1.263，glm-5.3-flash（智谱 coding plan）
-服务：cws.service（systemd），/my/run/cws/bridge.py，0.0.0.0:8642/ws，UFW 已放行 8642/tcp
+环境：WSL2 Ubuntu（/mnt/c/Users/loliyc/Documents/Code/cws），Node v22.23.2，
+codex CLI 0.154.0（npm @openai/codex）。本地验证用 scripts/mock-claude.mjs /
+scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴权冒烟。
 
-## 验收结果（全部真实验证）
+## 一、协议验收（mock CLI，8/8 PASS → SUMMARY_OK）
 
 | # | 场景 | 结果 | 证据 |
 |---|------|------|------|
-| 1 | new_session+send "1+1" | ✅ | final.text='2'（acc.log PASS 1.basic） |
-| 2 | 两 session 并行 | ✅ | f1='18' f2='16'，两进程并行 turn（journal dur 5084/6106ms） |
-| 3 | Bash 写文件→deny | ✅ | ask(kind=permission, tool=Bash, input=printf>p4test.txt)→deny→final 自述两次被拒 |
-| 4 | AskUserQuestion | ✅+⚠️ | ask(kind=question, questions[{question,header,options,multiSelect}]) 结构完整；answers 按问题原文回填→模型答"蓝"（askq2.py VERDICT PASS）。⚠️ 该工具不在 init tools 列表，靠模型自发调用；120s 超时自动 deny 链路实测（模型转纯文本提问） |
-| 5 | stop→turn_aborted→resume | ✅ | 数到 300 中途 stop→turn_aborted(reason=user)→进程 143→自动 --resume→final"数到50被打断"上下文连续 |
-| 6 | ping/sessions.list/错 token | ✅ | pong 回显 echo；sessions 列表正常；错 token 401（本机+外网双验） |
-| 7 | 外网可达（38→64:8642） | ✅ | UFW 放行后：坏 token 401 / 好 token 101 + pong（38 裸 socket RFC6455 实测） |
+| 1 | claude new_session+send "1+1" | OK | final.text="2" |
+| 2 | claude 两会话并行 | OK | f1="18" f2="16" |
+| 3 | claude Bash 写文件→ask→deny | OK | ask(tool=Bash,kind=permission)→final"工具调用被拒绝" |
+| 4 | claude AskUserQuestion | OK | questions 结构完整→answers 按问题原文回填→final"你选了蓝" |
+| 5 | claude stop→turn_aborted(user)→send 续聊 | OK | abort.reason=user，续轮 final 正常 |
+| 6 | ping/sessions.list/错 token 401 | OK | pong 回显 echo；401 拒绝握手 |
+| 7 | codex new_session(backend=codex)+send | OK | final.text="2"（JSONL→v0.2 帧映射正确） |
+| 8 | codex 流式中途 stop | OK | turn_aborted(reason=user) |
 
-## stream-json 帧结构实测摘要（2.1.263）
+## 二、真实 codex CLI 冒烟（0.154.0）
 
-- 帧型：system(init/status) / stream_event(content_block_delta text_delta) /
-  assistant(content blocks) / user(tool_result) / result / control_request(can_use_tool) /
-  control_response
-- **权限帧上 stdout 的两个必要条件**：`--permission-prompt-tool stdio` +
-  首帧 initialize 握手。stdio 模式下 CLI 不再主动发 system init，握手
-  response 即"进程就绪"。
-- 只读放行：allowed-tools 白名单内 Read/Grep/Glob 及只读 Bash(ls) 不弹权限；
-  写操作（Write/重定向写）必弹 can_use_tool。
-- result.subtype：正常 success；中途 interrupt → error_during_execution(is_error)。
-- SIGTERM 杀进程组（exit 143）→ `--resume <uuid>` 上下文完好（实测跨进程恢复）。
-- **--session-id 复用限制**：磁盘已有该会话历史（~/.claude/projects/<munged-cwd>/<uuid>.jsonl）
-  时再用 --session-id 报 "Session ID already in use"（exit 1）→ 必须 --resume。
-  桥的对策：对外任意 session_id，对内 uuid5 固定映射，重启时检测历史文件自动切 --resume。
-- AskUserQuestion 的 answers 约定（CLI 源码反编译证实）：`call({answers})` 按
-  `answers[<question 原文>]` 取值，值为所选 label。
+- codex exec --help 实测确认：--json、--skip-git-repo-check、--color、
+  -c/--config（支持点路径）、-s/--sandbox（read-only/workspace-write/
+  danger-full-access）、resume <SESSION_ID> [PROMPT] 子命令；**0.154.0 已移除
+  --full-auto**（适配器 full-auto 档改为 --dangerously-bypass-approvals-and-sandbox）。
+- 桥内真实起 codex exec --json：收到 thread.started(uuid)、turn.started、
+  error 事件（本机无外网/未登录 → "Reconnecting... request timed out"）→
+  桥正确产出 final{is_error:true, subtype:error_during_execution}。
+  事件结构与 openai/codex 源码 codex-rs/exec/src/exec_events.rs 一致
+  （ThreadItem 用 type 字段，snake_case：agent_message/reasoning/
+  command_execution/file_change/mcp_tool_call/web_search/todo_list）。
+- 结论：适配器与真实 CLI 的参数/事件协议对齐；实弹出活需渠道 key 或 CODEX_API_KEY。
 
-## 限流参数（config.json 可调）
+## 三、WebUI / 渠道管理
 
-max_active_sessions=2（全局活跃 claude 进程上限）、queue_max=5（排队）、
-min_turn_interval=2s（全局 turn 启动间隔）、单 session 并发 1（busy 报错）、
-turn_timeout=300s、ask_timeout=120s、idle_timeout_s=1800。
+- 静态服务：/ →200、/app.js →200、/style.css →200；路径穿越 /../config.json →404。
+- 渠道 roundtrip：channels.list(4 渠道,含 longxia protocol=auto) →
+  set_default(longxia) → save(tmptest) → delete(tmptest) → 默认回落清空 OK；
+  persist 后 secrets.json 无残留 key、channels.json 正确。
 
-## 坑与教训
+## 四、重构中踩掉的坑（Node 特有，Python 版无）
 
-1. systemd 环境缺 PATH → claude exit 1：service 里显式 Environment=PATH。
-2. `--permission-mode default` 不在 2.1.263 的 choices 里（accepted but
-   undocumented），实测不报错且行为=按需询问，沿用。
-3. 探针 killpg 连坐自杀：子进程必须 start_new_session=True（桥已内置）。
-4. aiohttp access log 默认打印请求行（带 ?token=）→ 桥内置 NoTokenAccessLogger 清空。
-5. --resume 后 CLI 不发 system init（stdio 模式+握手），session_ready 要在
-   握手 response 时发（幂等），否则客户端等不到。
-6. 清理探针时 grep 模式匹配到 SSH 命令自身把会话断了（exit 255）——红线再现，
-   清进程先列 PID 再逐个 kill。
-7. GLM 速度注意：简单问答 2-7s/turn；"数到50"这种 5.5s 就完，stop 竞态要挑
-   足够长的任务（验收用数到 300）。
+1. **SIGTERM 后 exitCode 为 null**：Node 子进程被信号杀死时 exitCode===null
+   且 signalCode==='SIGTERM'——所有存活判断必须同时看两者（util.procAlive），
+   否则 stop 后的下一次 send 会向死进程写 stdin（EPIPE 异步触发，write 不抛错），
+   turn 静默挂起。
+2. **ESM import 绑定只读**：跨模块对 DEFAULT_CHANNEL 赋值在运行时抛
+   "Assignment to constant variable"（node --check 不报）→ 改为 channelState 可变持有者。
+3. **abort 时序**：杀进程后若先等退出再发 turn_aborted，reader 的 close 事件会抢先
+   以 reason=process_exited 发帧 → abort 必须先置 aborted_sent+发帧，再后台等退出收敛。
+4. **pkill -f 自匹配**：模式字符串出现在自身命令行里会杀掉自己的 shell（Python 版
+   ACCEPTANCE 同款教训）→ 用 pgrep 列 PID 逐个 kill 并排除自身，
+   restart 脚本内用 server[.]js 括号技巧。
 
-## 客户端接入速查
+## 五、未覆盖项（需生产环境/凭据）
 
-    ws://<your-server>:8642/ws?token=<见 ssh root@<your-server> 'cat /my/run/cws/secrets.json'>
-    首帧: {"action":"new_session","params":{"session_id":"mychat"},"echo":"e1"}
-    等 session_ready → {"action":"send","params":{"session_id":"mychat","text":"..."},"echo":"e2"}
-    收 delta* → final{...}；ask 事件→ ask_reply{session_id,ask_id,behavior,updatedInput?}
-    停止: stop；关会话: drop_session（客户端断开会自动关掉名下会话）
+- 真实 claude CLI 端到端：本机未安装；帧逻辑按已实测的 Python 版 1:1 移植
+  （协议路径/时序/字段逐一对应），生产验证方式：把 config.json 的 claude_bin
+  指向已登录机器上的 claude 跑 wsclient.mjs 即可复测。
+- 龙虾(ClawBrain)实弹：需要用户 key；WebUI「测试连通/拉取模型列表」已就绪，
+  claude 走 /v1/messages、codex 走 /v1/chat/completions（双协议）。
+- codex 真实多轮 resume：需 API 可用时复测 thread_id 续轮（逻辑已按 exec.md
+  与源码实现，thread_id 落盘 sess.json）。

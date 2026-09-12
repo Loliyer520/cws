@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>cws 控制台</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <!-- 登录 -->
+  <div id="login" class="overlay hidden">
+    <div class="card login-card">
+      <h1>cws 控制台</h1>
+      <p class="muted">多会话 WebSocket 桥 · Claude Code / Codex CLI</p>
+      <input id="token-input" type="password" placeholder="访问 Token（secrets.json）" autocomplete="off">
+      <button id="login-btn" class="primary">连接</button>
+      <div id="login-err" class="err hidden"></div>
+    </div>
+  </div>
+
+  <div id="app" class="hidden">
+    <aside id="sidebar">
+      <div class="brand">
+        <div class="brand-title">cws</div>
+        <div class="brand-sub"><span id="conn-dot" class="dot"></span><span id="conn-text">未连接</span></div>
+      </div>
+      <button id="new-session-btn" class="primary full">＋ 新建会话</button>
+      <div id="session-list"></div>
+      <div class="sidebar-foot">
+        <button id="channels-btn" class="ghost full">⚙ 上游渠道 / 模型</button>
+      </div>
+    </aside>
+
+    <main id="main">
+      <header id="chat-head" class="hidden">
+        <div>
+          <div id="chat-title" class="chat-title">—</div>
+          <div id="chat-meta" class="muted small">—</div>
+        </div>
+        <div class="head-controls">
+          <select id="perm-select" title="权限等级"></select>
+          <select id="chan-select" title="渠道"></select>
+          <input id="model-input" class="model-input" placeholder="模型（留空=渠道默认）" title="模型">
+          <button id="apply-model-btn" class="ghost">应用</button>
+          <button id="stop-btn" class="danger hidden">停止</button>
+          <button id="drop-btn" class="ghost">删除会话</button>
+        </div>
+      </header>
+      <div id="empty-hint" class="empty-hint">
+        <p>连接后从左侧新建或选择一个会话</p>
+        <p class="muted small">支持 claude / codex 双后端 · 审批卡片 · 上游渠道统一管理</p>
+      </div>
+      <div id="messages" class="hidden"></div>
+      <footer id="chat-input" class="hidden">
+        <textarea id="input" rows="1" placeholder="输入消息，Enter 发送，Shift+Enter 换行"></textarea>
+        <button id="send-btn" class="primary">发送</button>
+      </footer>
+    </main>
+  </div>
+
+  <!-- 新建会话 -->
+  <div id="new-modal" class="overlay hidden">
+    <div class="card modal-card">
+      <h2>新建会话</h2>
+      <label>会话 ID（留空自动生成，字母数字-_）</label>
+      <input id="nm-sid" placeholder="mychat">
+      <label>后端</label>
+      <select id="nm-backend">
+        <option value="claude">claude CLI（Anthropic 协议渠道）</option>
+        <option value="codex">codex CLI（OpenAI 协议渠道）</option>
+      </select>
+      <label>渠道</label>
+      <select id="nm-channel"></select>
+      <label>模型（留空=渠道/机器默认）</label>
+      <input id="nm-model" placeholder="如 glm-5.3-flash">
+      <label>权限</label>
+      <select id="nm-perm"></select>
+      <div class="modal-actions">
+        <button id="nm-cancel" class="ghost">取消</button>
+        <button id="nm-ok" class="primary">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 渠道管理 -->
+  <div id="chan-modal" class="overlay hidden">
+    <div class="card modal-card wide">
+      <div class="modal-head">
+        <h2>上游渠道 / 模型统一管理</h2>
+        <button id="chan-close" class="ghost">×</button>
+      </div>
+      <div id="chan-list"></div>
+      <button id="chan-add" class="ghost">＋ 新增渠道</button>
+      <div id="chan-form" class="hidden">
+        <h3 id="chan-form-title">新增渠道</h3>
+        <div class="form-grid">
+          <label>名称（英文/数字/-_）<input id="cf-name"></label>
+          <label>显示名<input id="cf-label"></label>
+          <label>Base URL<input id="cf-base" placeholder="https://api.xxx.com/v1"></label>
+          <label>协议
+            <select id="cf-protocol">
+              <option value="anthropic">anthropic（/v1/messages，供 claude 后端）</option>
+              <option value="openai">openai（/v1/chat/completions，供 codex 后端）</option>
+              <option value="auto">auto（双协议，自动适配）</option>
+            </select>
+          </label>
+          <label>默认模型<input id="cf-model"></label>
+          <label>API Key<input id="cf-key" type="password" placeholder="留空=保留原值"></label>
+          <label>Key 环境变量（可选）<input id="cf-env" placeholder="如 CWS_APIKEY_LONGXIA"></label>
+        </div>
+        <div class="modal-actions">
+          <button id="cf-cancel" class="ghost">取消</button>
+          <button id="cf-test" class="ghost">测试连通</button>
+          <button id="cf-models" class="ghost">拉取模型列表</button>
+          <button id="cf-save" class="primary">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="toasts"></div>
+  <script src="/app.js"></script>
+</body>
+</html>

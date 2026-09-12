@@ -4,6 +4,7 @@
       "name": "glm",
       "label": "GLM-5.3",
       "base_url": "https://open.bigmodel.cn/api/anthropic",
+      "protocol": "anthropic",
       "model": "glm-5.3",
       "models": [
         "glm-5.3",
@@ -15,6 +16,7 @@
       "name": "glm-flash",
       "label": "GLM-5.3-Flash（快）",
       "base_url": "https://open.bigmodel.cn/api/anthropic",
+      "protocol": "anthropic",
       "model": "glm-5.3-flash",
       "models": [
         "glm-5.3-flash",
@@ -26,8 +28,18 @@
       "name": "kimi",
       "label": "kimi",
       "base_url": "https://api.kimi.com/coding",
+      "protocol": "anthropic",
       "model": "k3",
       "api_key_env": "CWS_APIKEY_KIMI"
+    },
+    {
+      "name": "longxia",
+      "label": "龙虾 (ClawBrain)",
+      "base_url": "https://api.clawbrain.dev/v1",
+      "protocol": "auto",
+      "model": "",
+      "models": [],
+      "api_key_env": "CWS_APIKEY_LONGXIA"
     }
   ],
   "default_channel": ""
