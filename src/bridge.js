@@ -471,6 +471,17 @@ export class Bridge {
       return;
     }
     if (!channel && channelState.defaultChannel) channel = channelByName(channelState.defaultChannel);
+    // 后端-渠道协议校验：anthropic 渠道只配 claude，openai 渠道只配 codex
+    if (channel && !this._channelProtocolOk(backend, channel)) {
+      await this._wsSend(ws, {
+        post_type: 'error', code: 'bad_backend_channel', channel: channel.name,
+        message: (backend === 'codex'
+          ? 'codex 后端不能使用 anthropic 协议渠道 ' + channel.name + '（glm/kimi），请选 openai 协议渠道或机器默认'
+          : 'claude 后端不能使用 openai 协议渠道 ' + channel.name + '，请选 anthropic 协议渠道'),
+        echo,
+      });
+      return;
+    }
     if (params.resume) {
       const s = makeSession(this, sid, ws, {
         resume: true, permissionMode: params.permission_mode,
@@ -771,6 +782,16 @@ export class Bridge {
     }
   }
 
+  /** 后端-渠道协议兼容性：auto 通用；anthropic 只配 claude；openai 只配 codex。 */
+  _channelProtocolOk(backend, ch) {
+    if (!ch) return true;
+    const proto = ch.protocol || 'auto';
+    if (proto === 'auto' || backend === 'openclaw') return true;
+    if (backend === 'codex') return proto !== 'anthropic';
+    if (backend === 'claude') return proto !== 'openai';
+    return true;
+  }
+
   async setModel(ws, params, echo) {
     const s = this.sessions.get(params.session_id);
     if (!s || s.closed) {
@@ -782,6 +803,14 @@ export class Bridge {
     let chan = params.channel ? channelByName(params.channel) : null;
     if (params.channel && !chan) {
       await this._wsSend(ws, { post_type: 'error', code: 'bad_channel', channel: params.channel, echo });
+      return;
+    }
+    if (chan && !this._channelProtocolOk(s.backend, chan)) {
+      await this._wsSend(ws, {
+        post_type: 'error', code: 'bad_backend_channel', channel: chan.name,
+        message: s.backend + ' 后端不能使用 ' + (chan.protocol || 'auto') + ' 协议渠道 ' + chan.name,
+        echo,
+      });
       return;
     }
     if ('channel' in params && !params.channel) {

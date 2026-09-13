@@ -26,6 +26,17 @@ const PERM_OPTIONS = {
 
 const BACKEND_LETTER = { claude: 'C', codex: 'X', openclaw: 'O' };
 
+function channelsForBackend(backend) {
+  if (backend === 'openclaw') return [];
+  return state.channels.filter((c) => {
+    const p = c.protocol || 'auto';
+    if (p === 'auto') return true;
+    if (backend === 'codex') return p !== 'anthropic';
+    if (backend === 'claude') return p !== 'openai';
+    return false;
+  });
+}
+
 // ---------- helpers ----------
 function toast(text, kind = '') {
   const t = document.createElement('div');
@@ -225,7 +236,8 @@ function refreshHead() {
   const opts = PERM_OPTIONS[s.backend] || PERM_OPTIONS.claude;
   $('perm-select').innerHTML = opts.map((o) =>
     '<option value="' + o[0] + '"' + (o[0] === s.permission_mode ? ' selected' : '') + '>' + o[1] + '</option>').join('');
-  const chans = [['', '机器默认']].concat(state.channels.map((c) => [c.name, c.label || c.name]));
+  const base = s.backend === 'openclaw' ? [['', '不适用']] : [['', '机器默认']];
+  const chans = base.concat(channelsForBackend(s.backend).map((c) => [c.name, c.label || c.name]));
   $('chan-select').innerHTML = chans.map((o) =>
     '<option value="' + o[0] + '"' + (o[0] === (s.channel || '') ? ' selected' : '') + '>' + o[1] + '</option>').join('');
   $('model-input').value = s.model || '';
@@ -516,10 +528,17 @@ $('apply-model-btn').onclick = () => {
 };
 
 // ---------- new session modal ----------
-function renderChannelOptions() {
+function renderChannelOptions(backend) {
+  backend = backend || $('nm-backend').value;
   const sel = $('nm-channel');
+  if (backend === 'openclaw') {
+    sel.innerHTML = '<option value="">（不适用，模型填裸名）</option>';
+    return;
+  }
+  const list = channelsForBackend(backend);
   sel.innerHTML = '<option value="">（默认渠道）</option>' +
-    state.channels.map((c) => '<option value="' + c.name + '">' + (c.label || c.name) + '</option>').join('');
+    list.map((c) => '<option value="' + c.name + '">' + (c.label || c.name) + '</option>').join('') +
+    (list.length ? '' : '<option value="" disabled>无兼容渠道（请先用 claude 后端，或机器默认）</option>');
 }
 
 $('new-session-btn').onclick = () => {
@@ -535,6 +554,7 @@ function refreshNewPerm() {
   const opts = PERM_OPTIONS[b] || PERM_OPTIONS.claude;
   $('nm-perm').innerHTML = opts.map((o) => '<option value="' + o[0] + '">' + o[1] + '</option>').join('');
   $('nm-gw-box').classList.toggle('hidden', b !== 'openclaw');
+  renderChannelOptions(b);
 }
 $('nm-cancel').onclick = () => $('new-modal').classList.add('hidden');
 $('nm-ok').onclick = () => {
