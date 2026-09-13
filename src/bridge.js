@@ -623,7 +623,12 @@ export class Bridge {
       const ch = API_CHANNELS[i];
       if (ch && ch.name === name) {
         if (!entry.api_key && ch.api_key) entry.api_key = ch.api_key;
-        if (!entry.api_key_env && ch.api_key_env) entry.api_key_env = ch.api_key_env;
+        if (entry.api_key) {
+          // 显式填了 key：以本地 secrets.json 为准，清掉环境变量引用
+          delete entry.api_key_env;
+        } else if (ch.api_key_env) {
+          entry.api_key_env = ch.api_key_env;
+        }
         if (!params.wire_api && ch.wire_api) entry.wire_api = ch.wire_api;
         if (!entry.http_headers && ch.http_headers) entry.http_headers = ch.http_headers;
         API_CHANNELS[i] = entry;

@@ -626,7 +626,6 @@ function openChanForm(c) {
   $('cf-model').value = c ? (c.model || '') : '';
   $('cf-key').value = '';
   $('cf-key').placeholder = c && c.key_tail ? '已配置（尾号' + c.key_tail + '），留空保留' : 'API Key';
-  $('cf-env').value = '';
   $('chan-form').classList.remove('hidden');
 }
 function hideChanForm() {
@@ -646,7 +645,6 @@ $('cf-save').onclick = () => {
     wire_api: $('cf-wire').value,
     model: $('cf-model').value.trim(),
     api_key: $('cf-key').value.trim(),
-    api_key_env: $('cf-env').value.trim(),
   });
 };
 $('cf-test').onclick = () => {

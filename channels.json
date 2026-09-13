@@ -5,32 +5,16 @@
       "label": "GLM-5.3",
       "base_url": "https://open.bigmodel.cn/api/anthropic",
       "protocol": "anthropic",
-      "model": "glm-5.3",
-      "models": [
-        "glm-5.3",
-        "glm-5.3-flash"
-      ],
-      "api_key_env": "CWS_APIKEY_GLM"
-    },
-    {
-      "name": "glm-flash",
-      "label": "GLM-5.3-Flash（快）",
-      "base_url": "https://open.bigmodel.cn/api/anthropic",
-      "protocol": "anthropic",
-      "model": "glm-5.3-flash",
-      "models": [
-        "glm-5.3-flash",
-        "glm-5.3"
-      ],
-      "api_key_env": "CWS_APIKEY_GLM_FLASH"
+      "wire_api": "responses",
+      "model": "glm-5.3"
     },
     {
       "name": "kimi",
       "label": "kimi",
       "base_url": "https://api.kimi.com/coding",
       "protocol": "anthropic",
-      "model": "k3",
-      "api_key_env": "CWS_APIKEY_KIMI"
+      "wire_api": "responses",
+      "model": "k3"
     }
   ],
   "default_channel": ""
