@@ -81,6 +81,8 @@ final）→ cws delta/final；远程执行审批 → `session.approval` 事件 �
 - **会话**：新建（选后端/渠道/模型/权限）、列表、接管切换、删除；多端实时同步
   （history + user_msg/cc_msg/tool_activity/delta 流 + 水位增量补推）。
 - **审批**：claude 权限请求卡片、AskUserQuestion 选项卡片、openclaw 执行审批卡片。
+- **后端配置**：侧栏「后端与网关」里改 claude/codex 路径、默认后端、OpenClaw 网关
+  （增删改 + 连通测试），保存即写回 config.json/secrets.json。
 - **统一管理上游模型**：渠道增删改、设默认、连通测试（延迟）、拉取上游模型列表、
   每会话渠道/模型热切换。
 

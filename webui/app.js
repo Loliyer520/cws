@@ -171,6 +171,12 @@ function handle(f) {
       break;
     }
     case 'send_ack': case 'stop_ack': break;
+    case 'backends': onBackends(f); break;
+    case 'backends_saved': toast('后端配置已保存', 'ok'); break;
+    case 'backend_test': {
+      toast((f.target || '后端') + (f.ok ? ' ✓ ' + (f.detail || '') + ' ' + f.latency_ms + 'ms' : ' ✗ ' + (f.detail || '')), f.ok ? 'ok' : 'err');
+      break;
+    }
     case 'error': onError(f); break;
     default: console.log('unhandled', f);
   }
@@ -636,6 +642,105 @@ function onChannelTest(f) {
   if (f.ok) toast('渠道 ' + f.channel + ' 连通 ✓ ' + (f.model || '') + ' ' + f.latency_ms + 'ms', 'ok');
   else toast('渠道 ' + f.channel + ' 测试失败：' + f.error, 'err');
 }
+
+// ---------- backends (claude/codex/openclaw) ----------
+state.gwList = [];
+
+function onBackends(f) {
+  state.backends = {
+    claude_bin: f.claude_bin || '',
+    codex_bin: f.codex_bin || '',
+    default_backend: f.default_backend || 'claude',
+  };
+  state.gwList = (f.gateways || []).map((g) => ({ name: g.name, url: g.url, agent: g.agent, token_tail: g.token_tail, token: '' }));
+  if ($('be-modal').classList.contains('hidden')) return;
+  $('be-claude').value = state.backends.claude_bin;
+  $('be-codex').value = state.backends.codex_bin;
+  $('be-default').value = state.backends.default_backend;
+  renderGwList();
+}
+
+function renderGwList() {
+  const box = $('be-gw-list');
+  box.innerHTML = '';
+  for (const g of state.gwList) {
+    const item = el('div', 'chan-item');
+    const grow = el('div', 'grow');
+    const name = el('div', 'name');
+    name.appendChild(document.createTextNode(g.name));
+    if (g.name === state.backends.default_backend === 'openclaw' ? true : false) name.appendChild(el('span', 'tag', '默认'));
+    const detail = el('div', 'detail', g.url + ' · agent:' + g.agent + (g.token_tail ? ' · token…' + g.token_tail : ' · 无token'));
+    grow.appendChild(name); grow.appendChild(detail);
+    item.appendChild(grow);
+    const t = el('button', 'btn ghost', '测试');
+    t.onclick = () => send('backends.test', { target: 'openclaw:' + g.name });
+    item.appendChild(t);
+    const ed = el('button', 'btn ghost', '编辑');
+    ed.onclick = () => openGwForm(g);
+    item.appendChild(ed);
+    const del = el('button', 'btn danger', '删');
+    del.onclick = () => { state.gwList = state.gwList.filter((x) => x.name !== g.name); renderGwList(); };
+    item.appendChild(del);
+    box.appendChild(item);
+  }
+}
+
+function openGwForm(g) {
+  g = g || null;
+  state.gwEditing = g ? g.name : null;
+  $('bf-name').value = g ? g.name : '';
+  $('bf-name').disabled = !!g;
+  $('bf-url').value = g ? g.url : '';
+  $('bf-agent').value = g ? (g.agent || 'main') : 'main';
+  $('bf-token').value = '';
+  $('bf-token').placeholder = g && g.token_tail ? '已配置（尾号' + g.token_tail + '），留空保留' : 'Token';
+  $('be-gw-form').classList.remove('hidden');
+}
+function hideGwForm() {
+  state.gwEditing = null;
+  $('be-gw-form').classList.add('hidden');
+}
+
+$('backends-btn').onclick = () => {
+  hideGwForm();
+  $('be-modal').classList.remove('hidden');
+  send('backends.list');
+};
+$('be-close').onclick = () => $('be-modal').classList.add('hidden');
+$('be-cancel').onclick = () => $('be-modal').classList.add('hidden');
+$('be-test-claude').onclick = () => send('backends.test', { target: 'claude' });
+$('be-test-codex').onclick = () => send('backends.test', { target: 'codex' });
+$('be-gw-add').onclick = () => openGwForm(null);
+$('bf-cancel').onclick = hideGwForm;
+$('bf-save').onclick = () => {
+  const name = $('bf-name').value.trim();
+  if (!name) { toast('请填写网关名称', 'err'); return; }
+  const entry = { name, url: $('bf-url').value.trim(), agent: $('bf-agent').value.trim() || 'main', token: $('bf-token').value.trim(), token_tail: $('bf-token').value.trim().slice(-4) };
+  const i = state.gwList.findIndex((x) => x.name === name);
+  if (i >= 0) {
+    const old = state.gwList[i];
+    entry.token = entry.token || old.token;
+    entry.token_tail = entry.token ? entry.token.slice(-4) : old.token_tail;
+    state.gwList[i] = entry;
+  } else {
+    entry.token_tail = entry.token ? entry.token.slice(-4) : '';
+    state.gwList.push(entry);
+  }
+  hideGwForm();
+  renderGwList();
+};
+$('bf-test').onclick = () => {
+  const name = $('bf-name').value.trim() || state.gwEditing;
+  if (name) send('backends.test', { target: 'openclaw:' + name });
+};
+$('be-save').onclick = () => {
+  send('backends.save', {
+    claude_bin: $('be-claude').value.trim(),
+    codex_bin: $('be-codex').value.trim(),
+    default_backend: $('be-default').value,
+    gateways: state.gwList.map((g) => ({ name: g.name, url: g.url, agent: g.agent, token: g.token || '' })),
+  });
+};
 
 // ---------- init ----------
 (function init() {

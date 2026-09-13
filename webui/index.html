@@ -31,6 +31,10 @@
     </button>
     <nav id="session-list"></nav>
     <div class="sidebar-foot">
+      <button id="backends-btn" class="btn ghost full">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="12" height="4" rx="1"/><rect x="2" y="9" width="12" height="4" rx="1"/><circle cx="5" cy="5" r=".8" fill="currentColor"/><circle cx="5" cy="11" r=".8" fill="currentColor"/></svg>
+        后端与网关
+      </button>
       <button id="channels-btn" class="btn ghost full">
         <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4"/></svg>
         上游渠道与模型
@@ -152,6 +156,55 @@
     </div>
   </div>
 </div>
+
+  <!-- 后端与网关 -->
+  <div id="be-modal" class="overlay hidden">
+    <div class="modal wide">
+      <div class="modal-head">
+        <h2>后端与网关</h2>
+        <button id="be-close" class="btn icon"><svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      </div>
+
+      <h3>本地 CLI 后端</h3>
+      <div class="form-grid">
+        <label>claude CLI 路径<input id="be-claude" class="ctrl full" placeholder="/usr/local/bin/claude"></label>
+        <label>codex CLI 路径<input id="be-codex" class="ctrl full" placeholder="codex"></label>
+        <label>默认后端
+          <select id="be-default" class="ctrl full">
+            <option value="claude">claude</option>
+            <option value="codex">codex</option>
+            <option value="openclaw">openclaw</option>
+          </select>
+        </label>
+      </div>
+      <div class="modal-actions" style="justify-content:flex-start">
+        <button id="be-test-claude" class="btn ghost">测试 claude</button>
+        <button id="be-test-codex" class="btn ghost">测试 codex</button>
+      </div>
+
+      <h3>远程网关（OpenClaw）</h3>
+      <div id="be-gw-list"></div>
+      <button id="be-gw-add" class="btn ghost">＋ 新增网关</button>
+      <div id="be-gw-form" class="hidden">
+        <div class="form-grid">
+          <label>名称<input id="bf-name" class="ctrl full" placeholder="openclaw"></label>
+          <label>URL<input id="bf-url" class="ctrl full" placeholder="ws://host:18789"></label>
+          <label>Agent<input id="bf-agent" class="ctrl full" placeholder="main"></label>
+          <label>Token<input id="bf-token" type="password" class="ctrl full" placeholder="留空=保留原值"></label>
+        </div>
+        <div class="modal-actions">
+          <button id="bf-cancel" class="btn ghost">取消</button>
+          <button id="bf-test" class="btn ghost">测试连接</button>
+          <button id="bf-save" class="btn primary">保存网关</button>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button id="be-cancel" class="btn ghost">取消</button>
+        <button id="be-save" class="btn primary">保存全部</button>
+      </div>
+    </div>
+  </div>
 
 <div id="toasts"></div>
 <script src="/app.js"></script>

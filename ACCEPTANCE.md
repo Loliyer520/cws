@@ -102,3 +102,12 @@ scripts/mock-codex.mjs 全协议 mock（免 key），真实 codex 只做无鉴�
   Δ"工具已执行"→final。全链路 PASS。
 - 回归：claude/codex mock 验收 8/8 通过（wsclient.mjs 新增 9.openclaw_basic）。
 
+
+## 八、前端后端配置（claude/codex/openclaw）实测（2026-09-12 追加）
+
+- 新增 backends.list/save/test 动作 + WebUI「后端与网关」弹窗。
+- 配置层：claude_bin/codex_bin/default_backend/gateways 改为可变 + persistBackends
+  （网关 token 拆到 secrets.json gateway_tokens，列表只回显尾 4 位）。
+- 实测：backends.list 回显三后端；backends.test claude→2.1.269、codex→0.154.0、
+  openclaw→connected 17ms（mock 网关）；backends.save 改 codex_bin+网关写回 config.json。
+

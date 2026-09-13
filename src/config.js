@@ -60,9 +60,9 @@ export const CFG = cfg;
 export const TOKEN = String(cfg.token || '');
 export const ONE_TIME_TOKENS = new Set(cfg.one_time_tokens || []);
 export const PORT = Number(cfg.port || 8642);
-export const CLAUDE_BIN = cfg.claude_bin || '/usr/local/bin/claude';
-export const CODEX_BIN = cfg.codex_bin || 'codex';
-export const DEFAULT_BACKEND = cfg.default_backend === 'codex' ? 'codex' : 'claude';
+export let CLAUDE_BIN = cfg.claude_bin || '/usr/local/bin/claude';
+export let CODEX_BIN = cfg.codex_bin || 'codex';
+export let DEFAULT_BACKEND = ['openclaw', 'codex', 'claude'].includes(cfg.default_backend) ? cfg.default_backend : 'claude';
 export const MAX_ACTIVE = Number(cfg.max_active_sessions ?? 3);
 export const QUEUE_MAX = Number(cfg.queue_max ?? 5);
 export const TURN_TIMEOUT = Number(cfg.turn_timeout ?? 300);
@@ -77,9 +77,55 @@ export const WEBUI_CFG = {
 };
 
 // 远程网关（OpenClaw 等）：name -> { url, token, agent }
-export const GATEWAYS = cfg.gateways || {};
+export let GATEWAYS = cfg.gateways || {};
+// 网关 token：内联 > secrets.json gateway_tokens[name] > 环境变量
+{
+  const secrets = loadJsonFile(SECRETS_PATH, {});
+  const gt = secrets.gateway_tokens || {};
+  for (const [name, g] of Object.entries(GATEWAYS)) {
+    if (!g || typeof g !== 'object' || g.token) continue;
+    if (gt[name]) g.token = gt[name];
+    else {
+      const env = process.env['CWS_GATEWAY_TOKEN_' + String(name).toUpperCase()];
+      if (env) g.token = env;
+    }
+  }
+}
 export function gatewayByName(name) {
   return GATEWAYS[name] || null;
+}
+
+// setter（ESM import 绑定只读，跨模块修改经这些函数）
+export function setClaudeBin(v) { CLAUDE_BIN = v; }
+export function setCodexBin(v) { CODEX_BIN = v; }
+export function setDefaultBackend(v) { if (['openclaw', 'codex', 'claude'].includes(v)) DEFAULT_BACKEND = v; }
+export function setGateways(next) {
+  for (const k of Object.keys(GATEWAYS)) delete GATEWAYS[k];
+  Object.assign(GATEWAYS, next);
+}
+
+/** 持久化后端配置（claude/codex 路径 + 默认后端 + 网关）到 config.json/secrets.json。 */
+export function persistBackends() {
+  try {
+    const cfgFile = loadJsonFile(CONFIG_PATH, {});
+    cfgFile.claude_bin = CLAUDE_BIN;
+    cfgFile.codex_bin = CODEX_BIN;
+    cfgFile.default_backend = DEFAULT_BACKEND;
+    const gOut = {};
+    const tokens = {};
+    for (const [name, g] of Object.entries(GATEWAYS)) {
+      if (!g || typeof g !== 'object') continue;
+      gOut[name] = { url: g.url || '', agent: g.agent || 'main' };
+      if (g.token) tokens[name] = g.token;
+    }
+    cfgFile.gateways = gOut;
+    writeJsonFile(CONFIG_PATH, cfgFile);
+    const s = loadJsonFile(SECRETS_PATH, {});
+    s.gateway_tokens = tokens;
+    writeJsonFile(SECRETS_PATH, s, 0o600);
+  } catch (e) {
+    log('persist_backends_err', { err: String(e) });
+  }
 }
 
 export let API_CHANNELS = Array.isArray(cfg.api_channels) ? cfg.api_channels : [];

@@ -10,6 +10,8 @@ import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
   IDLE_TIMEOUT, API_CHANNELS, channelState, setDefaultChannel, channelByName,
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
+  CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
+  setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
 } from './config.js';
 import { log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
 
@@ -341,6 +343,15 @@ export class Bridge {
         }
         break;
       }
+      case 'backends.list':
+        await this.backendsList(ws, echo);
+        break;
+      case 'backends.save':
+        await this.backendsSave(ws, params, echo);
+        break;
+      case 'backends.test':
+        await this.backendsTest(ws, params, echo);
+        break;
       default:
         await this._wsSend(ws, { post_type: 'error', code: 'unknown_action', action, echo });
     }
@@ -778,5 +789,83 @@ export class Bridge {
       return;
     }
     await s.setChannel(chan, params.model, echo);
+  }
+
+  // ---------- backends (claude/codex/openclaw gateway) config ----------
+  async backendsList(ws, echo) {
+    const gateways = [];
+    for (const [name, g] of Object.entries(GATEWAYS)) {
+      if (!g || typeof g !== 'object') continue;
+      const tok = String(g.token || '');
+      gateways.push({ name, url: g.url || '', agent: g.agent || 'main', token_tail: tok.slice(-4) });
+    }
+    await this._wsSend(ws, {
+      post_type: 'backends', claude_bin: CLAUDE_BIN, codex_bin: CODEX_BIN,
+      default_backend: DEFAULT_BACKEND, gateways, echo,
+    });
+  }
+
+  async backendsSave(ws, params, echo) {
+    if (params.claude_bin !== undefined) setClaudeBin(String(params.claude_bin || '').trim() || '/usr/local/bin/claude');
+    if (params.codex_bin !== undefined) setCodexBin(String(params.codex_bin || '').trim() || 'codex');
+    if (params.default_backend !== undefined) setDefaultBackend(params.default_backend);
+    if (Array.isArray(params.gateways)) {
+      const next = {};
+      for (const g of params.gateways) {
+        if (!g || typeof g !== 'object' || !g.name) continue;
+        const name = String(g.name).trim();
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(name)) continue;
+        const prev = GATEWAYS[name] || {};
+        next[name] = {
+          url: String(g.url || '').trim(),
+          agent: String(g.agent || '').trim() || 'main',
+          token: g.token ? String(g.token) : (prev.token || ''),
+        };
+      }
+      setGateways(next);
+    }
+    persistBackends();
+    log('backends_saved', { default_backend: DEFAULT_BACKEND, gateways: Object.keys(GATEWAYS) });
+    await this._wsSend(ws, { post_type: 'backends_saved', echo });
+    await this.backendsList(ws, echo);
+  }
+
+  async backendsTest(ws, params, echo) {
+    const target = String(params.target || '');
+    const t0 = now();
+    const reply = (ok, detail) => this._wsSend(ws, {
+      post_type: 'backend_test', target, ok, detail, latency_ms: Math.round((now() - t0) * 1000), echo,
+    });
+    if (target === 'claude' || target === 'codex') {
+      const bin = target === 'claude' ? CLAUDE_BIN : CODEX_BIN;
+      try {
+        const { spawn } = await import('node:child_process');
+        const out = await new Promise((resolve) => {
+          const p = spawn(bin, ['--version'], { timeout: 15000 });
+          let s = ''; p.stdout && p.stdout.on('data', (d) => { s += d; });
+          p.on('error', (e) => resolve('ERR:' + e.message));
+          p.on('close', () => resolve(s.trim().slice(0, 80) || '(no output)'));
+        });
+        await reply(!String(out).startsWith('ERR:'), out);
+      } catch (e) {
+        await reply(false, String(e));
+      }
+      return;
+    }
+    if (target.startsWith('openclaw')) {
+      const name = target.includes(':') ? target.split(':')[1] : 'openclaw';
+      try {
+        const { getGateway } = await import('./gateway.js');
+        await Promise.race([
+          getGateway(name),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('connect timeout')), 15000)),
+        ]);
+        await reply(true, 'connected');
+      } catch (e) {
+        await reply(false, String(e && e.message ? e.message : e));
+      }
+      return;
+    }
+    await reply(false, 'unknown target');
   }
 }
