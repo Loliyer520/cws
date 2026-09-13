@@ -30,6 +30,9 @@ export class ClaudeSession extends BaseSession {
     this._spawnLock = Promise.resolve();
     this._ctlFutures = new Map(); // request_id -> {resolve}
     this.ready = this._makeReady();
+    // SIGTERM 已发、进程尚未退出（procAlive 仍为 true 的垂死窗口）。
+    // 置位于 _killpg，清位于 start 拉起新进程；_ensureProcess 见位先等死透。
+    this.dying = false;
   }
 
   _makeReady() {
@@ -92,6 +95,7 @@ export class ClaudeSession extends BaseSession {
         stdio: ['pipe', 'pipe', 'ignore'],
         env: _procEnv(this.channel),
       });
+      this.dying = false;
       // swallow async EPIPE on stdin after process death (Node emits 'error'
       // asynchronously instead of throwing on write)
       this.proc.stdin.on('error', () => {});
@@ -122,6 +126,15 @@ export class ClaudeSession extends BaseSession {
   }
 
   async _ensureProcess() {
+    if (this.dying) {
+      // 前一次 stop 的 SIGTERM 还在路上（procAlive 仍 true）：不纳入进程会
+      // 早退 start()，把新轮写进将死进程（伪 process_exited，永无 final）。
+      // 等死透，超时补 SIGKILL；并发 send 在这排队，与 _spawnLock 串行不冲突。
+      await waitProc(this.proc, 3000);
+      killProcGroupForce(this.proc);
+      await waitProc(this.proc, 1000);
+      this.dying = false;
+    }
     if (!procAlive(this.proc)) {
       await this.start();
     }
@@ -550,12 +563,18 @@ export class ClaudeSession extends BaseSession {
         post_type: 'turn_aborted', session_id: this.id, reason, echo: this.turn_echo,
       });
     }
-    // settle exitCode so the next send sees a dead proc and respawns
+    // settle exitCode so the next send sees a dead proc and respawns.
+    // SIGTERM 后 CLI 可能优雅退出 >2s：超时补 SIGKILL，否则下一发 send 赶上
+    // 垂死窗口时 start() 误判存活早退、把新轮写进将死进程（伪 process_exited，
+    // 永无 final）。与 _restartForMode 的 kill→wait→force 收尾同款。
     await waitProc(this.proc, 2000);
+    if (killProcGroupForce(this.proc)) {
+      await waitProc(this.proc, 1000);
+    }
   }
 
   _killpg() {
-    killProcGroup(this.proc);
+    if (killProcGroup(this.proc)) this.dying = true;
   }
 
   async _killProcess() {

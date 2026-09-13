@@ -44,10 +44,14 @@ export function isValidSid(sid) {
   return typeof sid === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(sid);
 }
 
-/** uuid5 (deterministic) — CLI requires a real UUID for session ids. */
+/** uuid5 (deterministic) — CLI requires a real UUID for session ids.
+ * namespace must be a UUID (hex with dashes); hashed as 16 raw bytes so the
+ * derivation matches Python's uuid.uuid5 — v1 bridges used NAMESPACE_URL with
+ * the "cc-bridge:" name prefix, and --resume continuity depends on byte equality. */
+export const UUID_NAMESPACE_URL = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
+/** 与 v1 bridge.py 的 uuid.uuid5(uuid.NAMESPACE_URL, 'cc-bridge:'+sid) 保持字节一致。 */
 export function uuid5(namespace, name) {
-  // namespace: 'cc-bridge' as a DNS-namespace-like prefix
-  const ns = Buffer.from(namespace, 'utf8');
+  const ns = Buffer.from((namespace || UUID_NAMESPACE_URL).replace(/-/g, ''), 'hex');
   const hash = crypto.createHash('sha1').update(ns).update(Buffer.from(name, 'utf8')).digest();
   hash[6] = (hash[6] & 0x0f) | 0x50; // version 5
   hash[8] = (hash[8] & 0x3f) | 0x80; // RFC4122 variant

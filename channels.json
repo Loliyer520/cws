@@ -9,6 +9,14 @@
       "model": "glm-5.3"
     },
     {
+      "name": "glm-flash",
+      "label": "GLM-5.3-Flash（快）",
+      "base_url": "https://open.bigmodel.cn/api/anthropic",
+      "protocol": "anthropic",
+      "wire_api": "responses",
+      "model": "glm-5.3-flash"
+    },
+    {
       "name": "kimi",
       "label": "kimi",
       "base_url": "https://api.kimi.com/coding",

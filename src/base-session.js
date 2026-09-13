@@ -4,7 +4,7 @@ import path from 'node:path';
 import {
   WORKSPACES, PERMISSION_MODE, DEFAULT_BACKEND, TURN_TIMEOUT, channelByName,
 } from './config.js';
-import { uuid5, now, loadJsonFile, log } from './util.js';
+import { uuid5, UUID_NAMESPACE_URL, now, loadJsonFile, log } from './util.js';
 
 /** Frames broadcast to every authenticated connection (QQ multi-client model). */
 export const STREAM_POST_TYPES = new Set([
@@ -17,7 +17,7 @@ export class BaseSession {
     this.bridge = bridge;
     this.id = sid;
     // CLI requires a valid UUID for session ids; external id is free-form
-    this.cli_uuid = uuid5('cc-bridge', sid);
+    this.cli_uuid = uuid5(UUID_NAMESPACE_URL, 'cc-bridge:' + sid);
     this.ws = ws;
     this.pending_echo = null;
     this.cwd = path.join(WORKSPACES, sid);
