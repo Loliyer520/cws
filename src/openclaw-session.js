@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { BaseSession } from './base-session.js';
-import { gatewayByName, PERMISSION_MODE } from './config.js';
+import { GATEWAYS, gatewayByName, PERMISSION_MODE } from './config.js';
 import { getGateway, onGatewayEvent } from './gateway.js';
 import { log } from './util.js';
 
@@ -16,6 +16,15 @@ export class OpenclawSession extends BaseSession {
     super(bridge, sid, ws, opts);
     const meta = this._loadSessMeta();
     this.gatewayName = opts.gateway || meta.gateway || 'openclaw';
+    if (!gatewayByName(this.gatewayName)) {
+      // 老会话存的网关名已不在配置里（默认名 'openclaw' 漂移/网关改名）：
+      // 只配了一个网关时回退到它——否则 resume 即 unknown gateway，会话变砖
+      const names = Object.keys(GATEWAYS).filter((n) => GATEWAYS[n] && typeof GATEWAYS[n] === 'object');
+      if (names.length === 1) {
+        log('openclaw_gw_fallback', { session_id: this.id, from: this.gatewayName, to: names[0] });
+        this.gatewayName = names[0];
+      }
+    }
     // 网关配置里的 agent 是默认归属：多 agent 网关上 create 不带 agentId 会被拒
     const gwCfg = gatewayByName(this.gatewayName) || {};
     this.agentId = opts.agentId || gwCfg.agent || null;
