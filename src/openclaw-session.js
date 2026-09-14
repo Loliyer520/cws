@@ -52,6 +52,9 @@ export class OpenclawSession extends BaseSession {
   }
 
   _saveSessMeta() {
+    // BaseSession 构造器里的虚调用（super() 期间）：gatewayName 还没赋值，
+    // 写出去会把盘上 remote_key/gateway 抹掉——半初始化状态一律不落盘
+    if (this.gatewayName === undefined) return;
     try {
       fs.writeFileSync(
         this._sessMetaPath(),
@@ -77,10 +80,20 @@ export class OpenclawSession extends BaseSession {
       this._off = onGatewayEvent(this.gatewayName, (ev) => this._handleEvent(ev));
     }
     if (!this.remoteKey) {
-      const res = await gw.client.request('sessions.create', {
-        agentId: this.agentId || undefined,
-        label: 'cws:' + this.id,
-      });
+      let res;
+      try {
+        res = await gw.client.request('sessions.create', {
+          agentId: this.agentId || undefined,
+          label: 'cws:' + this.id,
+        });
+      } catch (e) {
+        // 远端已有同 label 会话（本地 remote_key 曾丢失/被清）：按 label 认领
+        // 回来续用，而不是把会话打死——transcript 还在远端
+        const adopted = await this._findByLabel(gw, 'cws:' + this.id);
+        if (!adopted) throw e;
+        res = { key: adopted.key, sessionId: adopted.sessionId || null };
+        log('openclaw_label_adopt', { session_id: this.id, remote_key: res.key });
+      }
       this.remoteKey = res.key;
       this.remoteSessionId = res.sessionId || null;
       log('openclaw_session_created', { session_id: this.id, remote_key: this.remoteKey });
@@ -96,6 +109,22 @@ export class OpenclawSession extends BaseSession {
     }
     this._saveSessMeta();
     this._gwReady = true;
+  }
+
+  /** 按 label 在网关会话列表里找回远端会话（remote_key 丢失后的自愈路径）。 */
+  async _findByLabel(gw, label) {
+    try {
+      const res = await gw.client.request('sessions.list', {
+        agentId: this.agentId || undefined,
+      }, { timeoutMs: 8000 });
+      const items = (res && (res.sessions || res.items)) || [];
+      for (const s of items) {
+        if (s && s.label === label) {
+          return { key: s.key || s.sessionKey || null, sessionId: s.sessionId || null };
+        }
+      }
+    } catch { /* fallthrough */ }
+    return null;
   }
 
   async _writeTurn(text) {

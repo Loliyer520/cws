@@ -59,7 +59,10 @@ export class BaseSession {
     this._disk_log_count = 0;
     this._loadTurnDisk();
     this.thinking_chars = 0; // server-side dedup thinking count
-    this._saveSessMeta(); // identity persisted immediately (revive path is idempotent)
+    // 只在文件不存在时写（新会话身份落盘）：这里虚分派会跑到子类覆盖版，
+    // 而派生字段（openclaw 的 gatewayName/remoteKey）还没初始化——无条件写
+    // 会把盘上 meta 抹成半初始化状态（remote_key 清空事故）
+    if (!fs.existsSync(this._sessMetaPath())) this._saveSessMeta();
   }
 
   // ---------- turn_log persistence ----------
