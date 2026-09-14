@@ -856,7 +856,13 @@ export class Bridge {
           token: g.token ? String(g.token) : (prev.token || ''),
         };
       }
+      const oldNames = Object.keys(GATEWAYS);
       setGateways(next);
+      // 被删掉的网关：停掉仍在跑的连接（改配置的不用管——getGateway 按指纹懒重建）
+      const { dropGateway } = await import('./gateway.js');
+      for (const n of oldNames) {
+        if (!next[n]) dropGateway(n);
+      }
     }
     persistBackends();
     log('backends_saved', { default_backend: DEFAULT_BACKEND, gateways: Object.keys(GATEWAYS) });
