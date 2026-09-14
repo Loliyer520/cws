@@ -22,6 +22,11 @@ function resultFrame(text, extra = {}) {
 function delta(text) {
   out({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text } } });
 }
+// 真 CLI 顺序：stream_event 增量发完后，还会发一条完整 assistant 帧（text/tool_use 块）。
+// mock 若只发 delta 不发完整帧，"delta 落 buf + 完整帧再落 buf"的双写回归就测不到。
+function assistantFrame(blocks) {
+  out({ type: 'assistant', message: { role: 'assistant', model: 'mock-claude', content: blocks } });
+}
 
 rl.on('line', async (line) => {
   line = line.trim();
@@ -67,6 +72,9 @@ rl.on('line', async (line) => {
     return;
   }
   if (text.includes('bash') && text.includes('创建')) {
+    // 工具前置文本：delta + 完整帧（含 tool_use）——双写回归的触发路径
+    delta('准备创建文件。');
+    assistantFrame([{ type: 'text', text: '准备创建文件。' }, { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'printf hi > p4test.txt' } }]);
     pendingTool = {
       request_id: 'req-' + Math.random().toString(16).slice(2, 10),
       tool: 'Bash',
@@ -87,6 +95,7 @@ rl.on('line', async (line) => {
   const m = text.match(/(\d+)\s*\+\s*(\d+)/);
   const n = m ? String(Number(m[1]) + Number(m[2])) : 'mock-claude 收到：' + text.slice(0, 30);
   delta(n);
+  assistantFrame([{ type: 'text', text: n }]);
   resultFrame(n);
 });
 rl.on('close', () => process.exit(0));
