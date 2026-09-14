@@ -49,6 +49,7 @@ export class OpenclawSession extends BaseSession {
           backend: this.backend,
           thread_id: this.thread_id || '',
           gateway: this.gatewayName,
+          agent_id: this.agentId || '',
           remote_key: this.remoteKey || '',
           remote_session_id: this.remoteSessionId || '',
         }),
@@ -305,6 +306,20 @@ export class OpenclawSession extends BaseSession {
 
   async close(reason = 'dropped', notify = true, echo = null) {
     if (this._off) { this._off(); this._off = null; }
+    // 用户销毁：远端网关的会话+transcript 一并删（别的关闭原因不动远端）
+    if (reason === 'dropped' && this.remoteKey) {
+      try {
+        const gw = await getGateway(this.gatewayName);
+        await gw.client.request('sessions.delete', {
+          key: this.remoteKey,
+          agentId: this.agentId || undefined,
+          deleteTranscript: true,
+        });
+        log('openclaw_remote_deleted', { session_id: this.id, remote_key: this.remoteKey });
+      } catch (e) {
+        log('openclaw_remote_delete_err', { session_id: this.id, err: String(e) });
+      }
+    }
     await super.close(reason, notify, echo);
   }
 }

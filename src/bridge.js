@@ -36,6 +36,23 @@ function loadSessMetaRaw(sid) {
   }
 }
 
+/** openclaw 会话被销毁时删远端网关记录（会话不在内存也要删，lazy 路径）。
+ *  异步执行不阻塞回帧；失败只记日志（本地已删，远端残留仅影响网关侧）。 */
+async function remoteDeleteOpenclaw(meta, sid) {
+  try {
+    const { getGateway } = await import('./gateway.js');
+    const gw = await getGateway(meta.gateway || 'openclaw');
+    await gw.client.request('sessions.delete', {
+      key: meta.remote_key,
+      agentId: meta.agent_id || undefined,
+      deleteTranscript: true,
+    });
+    log('openclaw_remote_deleted', { session_id: sid, remote_key: meta.remote_key, lazy: true });
+  } catch (e) {
+    log('openclaw_remote_delete_err', { session_id: sid, lazy: true, err: String(e) });
+  }
+}
+
 function sidecarMode(sid) {
   const meta = loadSessMetaRaw(sid);
   return (meta && meta.permission_mode) || null;
@@ -249,9 +266,13 @@ export class Bridge {
         this.queue = this.queue.filter((q) => q.sid !== sid);
         // 销毁=盘上记录一并删除：内存会话和已回收的 lazy 会话统一处理，
         // 否则闲置回收过的会话只回帧不删盘，换个端 sync 又能复活
+        const meta = s ? null : loadSessMetaRaw(sid); // 内存会话由 close() 里删远端
         try {
           fs.rmSync(path.join(WORKSPACES, sid), { recursive: true, force: true });
         } catch { /* ignore */ }
+        if (meta && meta.backend === 'openclaw' && meta.remote_key) {
+          remoteDeleteOpenclaw(meta, sid).catch(() => {});
+        }
         if (s && !s.closed) {
           await s.close('dropped', true, echo);
         } else {
