@@ -28,6 +28,10 @@ export class OpenclawSession extends BaseSession {
     // 网关配置里的 agent 是默认归属：多 agent 网关上 create 不带 agentId 会被拒
     const gwCfg = gatewayByName(this.gatewayName) || {};
     this.agentId = opts.agentId || gwCfg.agent || null;
+    // 模型完全归网关侧配置管：桥的渠道/模型体系是 claude 后端概念，
+    // 不继承默认渠道/meta 残留，也不随 create/set_model 下发
+    this.channel = null;
+    this.model_name = null;
     this.remoteKey = opts.remoteKey || meta.remote_key || null;
     this.remoteSessionId = meta.remote_session_id || null;
     this._off = null;
@@ -76,7 +80,6 @@ export class OpenclawSession extends BaseSession {
       const res = await gw.client.request('sessions.create', {
         agentId: this.agentId || undefined,
         label: 'cws:' + this.id,
-        model: this.model_name || undefined,
       });
       this.remoteKey = res.key;
       this.remoteSessionId = res.sessionId || null;
@@ -287,27 +290,11 @@ export class OpenclawSession extends BaseSession {
   }
 
   async setChannel(channel, model = null, echo = null, clear = false) {
-    if (channel === null && model === null && !clear) {
-      await this.sendWs({
-        post_type: 'model_ack', session_id: this.id,
-        channel: (this.channel || {}).name, model: this.model_name, applied: false, echo,
-      });
-      return;
-    }
-    if (channel === null && model && !clear && this.channel !== null) channel = Object.assign({}, this.channel);
-    if (channel !== null && model) channel = Object.assign({}, channel, { model });
-    this.channel = channel;
-    this.model_name = channel === null ? (model || null) : (channel.model || model || null);
-    this._saveSessMeta();
-    if (this._gwReady && this.remoteKey) {
-      try {
-        const gw = await getGateway(this.gatewayName);
-        await gw.client.request('sessions.patch', { key: this.remoteKey, model: this.model_name || undefined });
-      } catch (e) { /* ignore */ }
-    }
+    // openclaw 会话：模型由网关侧配置管理，桥不接收渠道/模型切换，
+    // 一律回 applied:false（前端据此提示「网关管理」）
     await this.sendWs({
       post_type: 'model_ack', session_id: this.id,
-      channel: (channel || {}).name, model: this.model_name, applied: true, echo,
+      channel: null, model: null, applied: false, echo,
     });
   }
 
