@@ -16,7 +16,9 @@ export class OpenclawSession extends BaseSession {
     super(bridge, sid, ws, opts);
     const meta = this._loadSessMeta();
     this.gatewayName = opts.gateway || meta.gateway || 'openclaw';
-    this.agentId = opts.agentId || null;
+    // 网关配置里的 agent 是默认归属：多 agent 网关上 create 不带 agentId 会被拒
+    const gwCfg = gatewayByName(this.gatewayName) || {};
+    this.agentId = opts.agentId || gwCfg.agent || null;
     this.remoteKey = opts.remoteKey || meta.remote_key || null;
     this.remoteSessionId = meta.remote_session_id || null;
     this._off = null;
@@ -72,7 +74,8 @@ export class OpenclawSession extends BaseSession {
     }
     try {
       await gw.client.request('sessions.messages.subscribe', {
-        sessionKey: this.remoteKey,
+        key: this.remoteKey,
+        agentId: this.agentId || undefined,
         includeApprovals: true,
       });
     } catch (e) {
@@ -106,6 +109,17 @@ export class OpenclawSession extends BaseSession {
     return p && (p.sessionKey === this.remoteKey || p.sourceSessionKey === this.remoteKey);
   }
 
+  /** OpenClaw 消息文本在 message.content[]（[{type:'text',text}]），兼容纯字符串。 */
+  _contentText(content) {
+    if (typeof content === 'string') return content;
+    if (!Array.isArray(content)) return '';
+    let out = '';
+    for (const b of content) {
+      if (b && typeof b === 'object' && b.type === 'text' && typeof b.text === 'string') out += b.text;
+    }
+    return out;
+  }
+
   async _handleChat(p) {
     if (!this._isMine(p)) return;
     if (p.state === 'delta') {
@@ -137,7 +151,8 @@ export class OpenclawSession extends BaseSession {
     this._cancelTurnTimer();
     this.last_activity = Date.now() / 1000;
     const message = p.message || {};
-    const finalText = typeof message === 'string' ? message : (message.text || this.text_buf.join(''));
+    const finalText = typeof message === 'string' ? message
+      : (message.text || this._contentText(message.content) || this.text_buf.join(''));
     const sealed = this._flushTextLog();
     let finalMid = (sealed || {}).id;
     if (!sealed && finalText && finalText.trim()) {
@@ -220,7 +235,7 @@ export class OpenclawSession extends BaseSession {
       const entries = [];
       for (const m of msgs) {
         const role = (m.role === 'user' || m.author === 'user' || m.from === 'user') ? 'user' : 'cc';
-        const text = m.text || m.content || (m.message && m.message.text) || '';
+        const text = m.text || this._contentText(m.content) || this._contentText(m.message && m.message.content) || '';
         if (typeof text === 'string' && text.trim()) entries.push(this._logTurn(role, text));
       }
       return entries;
