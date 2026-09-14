@@ -240,10 +240,18 @@ export class Bridge {
       }
       case 'drop_session': {
         const sid = params.session_id;
+        if (!isValidSid(sid)) {
+          await this._wsSend(ws, { post_type: 'error', code: 'bad_session_id', echo });
+          break;
+        }
         const s = this.sessions.get(sid);
         if (s) this.sessions.delete(sid);
         this.queue = this.queue.filter((q) => q.sid !== sid);
-        if (s) s.forgetTurnlog();
+        // 销毁=盘上记录一并删除：内存会话和已回收的 lazy 会话统一处理，
+        // 否则闲置回收过的会话只回帧不删盘，换个端 sync 又能复活
+        try {
+          fs.rmSync(path.join(WORKSPACES, sid), { recursive: true, force: true });
+        } catch { /* ignore */ }
         if (s && !s.closed) {
           await s.close('dropped', true, echo);
         } else {
