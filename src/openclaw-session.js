@@ -37,6 +37,10 @@ export class OpenclawSession extends BaseSession {
     this._off = null;
     this._gwReady = false;
     this._turnRunId = null;
+    // 每轮重置（_writeTurn）：agent 流去重状态
+    this._agentItems = new Map(); // assistant itemId -> 已转发的累计字符数
+    this._seenTools = new Set();  // 已播报的 toolCallId
+    this._sawAgentText = false;   // 见过 agent assistant 流后忽略 chat delta（同源双发）
     if (!OPENCLAW_PERMISSIONS.includes(this.permission_mode)) {
       this.permission_mode = 'read-only';
       this.launch_mode = 'read-only';
@@ -130,6 +134,9 @@ export class OpenclawSession extends BaseSession {
   async _writeTurn(text) {
     const gw = await getGateway(this.gatewayName);
     this._turnRunId = null;
+    this._agentItems = new Map();
+    this._seenTools = new Set();
+    this._sawAgentText = false;
     const res = await gw.client.request('chat.send', {
       sessionKey: this.remoteKey,
       agentId: this.agentId || undefined,
@@ -143,6 +150,7 @@ export class OpenclawSession extends BaseSession {
   _handleEvent(ev) {
     const p = ev.payload || {};
     if (ev.event === 'chat') return this._handleChat(p);
+    if (ev.event === 'agent') return this._handleAgent(p);
     if (ev.event === 'session.message') return this._handleSessionMessage(p);
     if (ev.event === 'session.approval') return this._handleApproval(p);
   }
@@ -169,7 +177,8 @@ export class OpenclawSession extends BaseSession {
     // idempotencyKey——只认自己这一轮的事件，别人/上一轮的 aborted 不能杀本地轮
     if (!this._turnRunId || !p.runId || p.runId !== this._turnRunId) return;
     if (p.state === 'delta') {
-      if (p.deltaText) {
+      // agent assistant 流是同一文本的源：见过它之后 chat delta 是纯重复
+      if (p.deltaText && !this._sawAgentText) {
         this.text_buf.push(p.deltaText);
         await this.sendWs({ post_type: 'delta', session_id: this.id, text: p.deltaText });
       }
@@ -182,6 +191,61 @@ export class OpenclawSession extends BaseSession {
     }
   }
 
+  /**
+   * agent 结构化流：assistant 文本项（含间隙文本）、工具调用、思考。
+   * 与 chat 事件同样按 _turnRunId 甄别——别的写入者的流不串台。
+   */
+  async _handleAgent(p) {
+    if (!this._isMine(p)) return;
+    if (!this._turnRunId || !p.runId || p.runId !== this._turnRunId) return;
+    const d = p.data || {};
+    if (p.stream === 'assistant') {
+      // text 是该 item 的累计全文：按 itemId 记已发长度，只发增量。
+      // 间隙文本（工具之间的 assistant 段）也走这里，工具播报时封口落盘。
+      const itemId = d.itemId || '_';
+      const text = typeof d.text === 'string' ? d.text : '';
+      const prev = this._agentItems.get(itemId) || 0;
+      let part = '';
+      if (text.length > prev) {
+        part = text.slice(prev);
+        this._agentItems.set(itemId, text.length);
+      } else if (!text && typeof d.delta === 'string' && d.delta && prev <= 0) {
+        part = d.delta; // 只给 delta 不给累计 text 的提供者（-1 = 已进入 delta 模式）
+        this._agentItems.set(itemId, -1);
+      }
+      if (part) {
+        this._sawAgentText = true;
+        this.text_buf.push(part);
+        this.last_activity = Date.now() / 1000;
+        await this.sendWs({ post_type: 'delta', session_id: this.id, text: part });
+      }
+    } else if (p.stream === 'item' && d.kind === 'tool') {
+      const id = d.toolCallId || d.itemId;
+      if (!id || this._seenTools.has(id)) return;
+      this._seenTools.add(id);
+      this.last_activity = Date.now() / 1000;
+      // 与 claude 后端同构：工具前把已积文本封口成 cc_msg，再播报工具步骤
+      const sealed = this._flushTextLog();
+      if (sealed) {
+        await this.sendWs({ post_type: 'cc_msg', session_id: this.id, mid: sealed.id, text: sealed.text });
+      }
+      const brief = String(d.meta || d.title || '').slice(0, 120);
+      const tEntry = this._logTurn('tool', `${d.name || 'tool'}：${brief}`);
+      await this.sendWs({
+        post_type: 'tool_activity', session_id: this.id,
+        tool: d.name || 'tool', brief, mid: (tEntry || {}).id,
+      });
+    } else if (p.stream === 'thinking') {
+      const delta = typeof d.delta === 'string' ? d.delta : '';
+      if (!delta) return;
+      this.thinking_chars += delta.length;
+      await this.sendWs({
+        post_type: 'thinking', session_id: this.id,
+        tokens: Math.max(1, Math.round(this.thinking_chars / 4)),
+      });
+    }
+  }
+
   async _handleSessionMessage(p) {
     if (!this._isMine(p)) return;
     // 消息记录会回显用户自己那条（role:user）：只把 assistant 记录当输出，
@@ -190,6 +254,7 @@ export class OpenclawSession extends BaseSession {
     if (m.role && m.role !== 'assistant') return;
     const rid = m.__openclaw && m.__openclaw.runId;
     if (rid && this._turnRunId && rid !== this._turnRunId) return;
+    if (this._sawAgentText) return; // assistant 记录与 agent 流同源，不双发
     const text = p.text || m.text || '';
     if (text && p.state !== 'delta') {
       this.text_buf.push(text);
