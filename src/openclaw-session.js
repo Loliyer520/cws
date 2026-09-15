@@ -236,6 +236,10 @@ export class OpenclawSession extends BaseSession {
         tool: d.name || 'tool', brief, mid: (tEntry || {}).id,
       });
     } else if (p.stream === 'thinking') {
+      // 只转发开场思考段：工具/正文出现后继续转，前端 onThinking 会为每个
+      // 思考段新开一个带 "● OpenClaw" 头的空 cc 块——工具行看起来像条条
+      // 都带 openclaw 标签（k3 每次工具调用前都思考，一轮几十个）
+      if (this._seenTools.size > 0 || this._sawAgentText) return;
       const delta = typeof d.delta === 'string' ? d.delta : '';
       if (!delta) return;
       this.thinking_chars += delta.length;
