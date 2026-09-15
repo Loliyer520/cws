@@ -72,6 +72,7 @@ export class OpenclawSession extends BaseSession {
           agent_id: this.agentId || '',
           remote_key: this.remoteKey || '',
           remote_session_id: this.remoteSessionId || '',
+          remark: this.remark || '',
         }),
       );
     } catch { /* ignore */ }

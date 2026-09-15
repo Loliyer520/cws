@@ -331,6 +331,7 @@ export class Bridge {
             backend: s.backend,
             permission_mode: s.permission_mode,
             title: s.turnTitle(),
+            remark: s.remark || '',
           });
         }
         for (const q of this.queue) {
@@ -384,6 +385,7 @@ export class Bridge {
             backend: meta.backend || 'claude',
             permission_mode: meta.permission_mode || null,
             title,
+            remark: meta.remark || '',
           });
         }
         await this._wsSend(ws, { post_type: 'sessions', sessions: out, echo });
@@ -451,6 +453,40 @@ export class Bridge {
         } else {
           await s.setPermission(params.mode, echo);
         }
+        break;
+      }
+      case 'session.remark': {
+        // 会话备注上云：跨设备共享的落点是 sess.json（桥重启/idle 回收后仍在）。
+        // 内存会话走 _saveSessMeta 白名单；lazy 会话（不在内存）不能为一条
+        // 备注拉起整个会话对象——原样合并进盘上 sess.json
+        const sid = params.session_id;
+        const remark = String(params.remark || '').trim().slice(0, 60);
+        if (!isValidSid(sid)) {
+          await this._wsSend(ws, { post_type: 'error', code: 'bad_session_id', echo });
+          break;
+        }
+        const rs = this.sessions.get(sid);
+        if (rs && !rs.closed) {
+          rs.remark = remark;
+          rs._saveSessMeta();
+        } else if (fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))) {
+          try {
+            const meta = loadSessMetaRaw(sid);
+            meta.remark = remark;
+            fs.writeFileSync(path.join(WORKSPACES, sid, 'sess.json'), JSON.stringify(meta));
+          } catch {
+            await this._wsSend(ws, {
+              post_type: 'error', code: 'remark_save_failed', session_id: sid, echo,
+            });
+            break;
+          }
+        } else {
+          await this._wsSend(ws, {
+            post_type: 'error', code: 'unknown_session', session_id: sid, echo,
+          });
+          break;
+        }
+        await this._wsSend(ws, { post_type: 'session_remark', session_id: sid, remark, echo });
         break;
       }
       case 'backends.list':

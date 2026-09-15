@@ -47,6 +47,8 @@ export class BaseSession {
     this.model_name = opts.model || (channel && channel.model) || meta.model || null;
     this.backend = opts.backend || meta.backend || DEFAULT_BACKEND;
     this.thread_id = meta.thread_id || null; // codex exec resume id
+    // 会话备注（客户端手填）：跨设备共享的落点在 sess.json，不进 turnlog
+    this.remark = String(meta.remark || '').slice(0, 60);
     this.pending_mode = null; // deferred permission switch before next send
     this.last_activity = now();
     this.last_turn_at = null;
@@ -174,6 +176,7 @@ export class BaseSession {
           model: this.model_name || '',
           backend: this.backend,
           thread_id: this.thread_id || '',
+          remark: this.remark || '',
         }),
       );
     } catch { /* ignore */ }
