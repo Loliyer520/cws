@@ -6,6 +6,7 @@ config.json.bak*
 __pycache__/
 venv/
 workspaces/
+workspaces-archive*.tar.gz
 restart_bridge.log
 node_modules/
 package-lock.json
