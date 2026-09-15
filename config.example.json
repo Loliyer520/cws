@@ -9,6 +9,7 @@
   "ask_timeout": 120,
   "min_turn_interval": 2,
   "idle_timeout_s": 1800,
+  "ws_retention_s": 604800,
   "allowed_tools": "Read,Grep,Glob,AskUserQuestion",
   "permission_mode": "default",
   "webui": {

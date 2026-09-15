@@ -8,7 +8,7 @@ import { CodexSession } from './codex-session.js';
 import { OpenclawSession } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
-  IDLE_TIMEOUT, API_CHANNELS, channelState, setDefaultChannel, channelByName,
+  IDLE_TIMEOUT, WS_RETENTION_S, API_CHANNELS, channelState, setDefaultChannel, channelByName,
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
   CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
@@ -68,6 +68,9 @@ export class Bridge {
     this.maxActive = MAX_ACTIVE;
     this.maxQueue = QUEUE_MAX;
     this.reaperTimer = setInterval(() => { this.idleReap().catch(() => {}); }, 60_000);
+    // 磁盘清扫：启动后 15s 先跑一次，之后每小时一次
+    this.sweepTimer = setInterval(() => { try { this.sweepWorkspaces(); } catch {} }, 3600_000);
+    setTimeout(() => { try { this.sweepWorkspaces(); } catch {} }, 15_000);
   }
 
   // ---------- capacity / gating ----------
@@ -218,8 +221,39 @@ export class Bridge {
     this.notifyCapacityChange();
   }
 
+  /** 磁盘 workspace 清扫：注册表里不存在的目录，mtime 超过保留期(WS_RETENTION_S)才删。
+   *  近期关闭的会话目录仍在保留期内，可按 sid revive（sess.json 还在）。 */
+  sweepWorkspaces() {
+    if (WS_RETENTION_S <= 0) return;
+    const cutMs = (now() - WS_RETENTION_S) * 1000;
+    let ents;
+    try {
+      ents = fs.readdirSync(WORKSPACES, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const ent of ents) {
+      const sid = ent.name;
+      if (!ent.isDirectory() || !isValidSid(sid)) continue;
+      if (this.sessions.has(sid)) continue;
+      const dir = path.join(WORKSPACES, sid);
+      let st;
+      try {
+        st = fs.statSync(dir);
+      } catch {
+        continue;
+      }
+      if (Math.max(st.mtimeMs, st.atimeMs || 0) >= cutMs) continue;
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+        log('ws_swept', { session_id: sid, age_days: Math.round((Date.now() - Math.max(st.mtimeMs, st.atimeMs || 0)) / 86400000) });
+      } catch { /* ignore */ }
+    }
+  }
+
   shutdown() {
     clearInterval(this.reaperTimer);
+    clearInterval(this.sweepTimer);
     const jobs = [];
     for (const s of this.sessions.values()) jobs.push(s.close('bridge_shutdown', false));
     return Promise.all(jobs);
@@ -303,6 +337,53 @@ export class Bridge {
           out.push({
             session_id: q.sid, alive: false, turn_active: false,
             queued: true, queue_position: this.queue.indexOf(q) + 1,
+          });
+        }
+        // 盘上 lazy 会话一并列出：idle 回收/桥重启后内存是空的，但 turnlog
+        // 还在盘上——清单若只报内存会话，客户端重启后服务端列表为空，
+        // 会话就像"丢了"（客户端孤儿剪枝还会误剪它们的状态条目）。
+        // 只读 sess.json + turnlog 还原展示字段，不登记进内存（注册会让
+        // idle reaper 反复 reap/注册循环，还会重复广播 session_closed）
+        const seen = new Set(out.map((e) => e.session_id));
+        let diskEnts = [];
+        try {
+          diskEnts = fs.readdirSync(WORKSPACES, { withFileTypes: true });
+        } catch { /* ignore */ }
+        for (const ent of diskEnts) {
+          if (!ent.isDirectory() || !isValidSid(ent.name) || seen.has(ent.name)) continue;
+          const dir = path.join(WORKSPACES, ent.name);
+          let lines;
+          try {
+            lines = fs.readFileSync(path.join(dir, 'turnlog.jsonl'), 'utf8').split('\n').filter(Boolean);
+          } catch {
+            continue; // 没有 turnlog = 不是可恢复会话（懒恢复判据同 sessionsSync）
+          }
+          const meta = loadSessMetaRaw(ent.name);
+          let last = null;
+          let title = '';
+          for (let i = lines.length - 1; i >= 0; i--) {
+            let rec;
+            try { rec = JSON.parse(lines[i]); } catch { continue; }
+            if (!last) last = rec;
+            if (rec.role === 'user' && !title) {
+              title = String(rec.text || '').trim().split('\n')[0].trim().slice(0, 24);
+            }
+            if (last && title) break; // 尾条 + 标题都有了；turnlog 有上限，扫全量也廉价
+          }
+          out.push({
+            session_id: ent.name,
+            alive: false,
+            turn_active: false,
+            lazy: true,
+            created_at: null,
+            last_turn_at: last ? (last.ts || null) : null,
+            last_msg_ts: last ? (last.ts || null) : null,
+            last_mid: last ? (last.id || null) : null,
+            channel: meta.channel || null,
+            model: meta.model || null,
+            backend: meta.backend || 'claude',
+            permission_mode: meta.permission_mode || null,
+            title,
           });
         }
         await this._wsSend(ws, { post_type: 'sessions', sessions: out, echo });
