@@ -164,6 +164,10 @@ export class OpenclawSession extends BaseSession {
 
   async _handleChat(p) {
     if (!this._isMine(p)) return;
+    // 同一远端会话可能有并发写入者（网关 agent 心跳 cron、dashboard 直连等），
+    // 互相 supersede 时输家会广播 aborted。chat.send 返回的 runId 就是我们传的
+    // idempotencyKey——只认自己这一轮的事件，别人/上一轮的 aborted 不能杀本地轮
+    if (!this._turnRunId || !p.runId || p.runId !== this._turnRunId) return;
     if (p.state === 'delta') {
       if (p.deltaText) {
         this.text_buf.push(p.deltaText);
@@ -180,7 +184,13 @@ export class OpenclawSession extends BaseSession {
 
   async _handleSessionMessage(p) {
     if (!this._isMine(p)) return;
-    const text = p.text || (p.message && p.message.text) || '';
+    // 消息记录会回显用户自己那条（role:user）：只把 assistant 记录当输出，
+    // 且别的写入者的消息不串台（__openclaw.runId 对不上就跳过）
+    const m = p.message || {};
+    if (m.role && m.role !== 'assistant') return;
+    const rid = m.__openclaw && m.__openclaw.runId;
+    if (rid && this._turnRunId && rid !== this._turnRunId) return;
+    const text = p.text || m.text || '';
     if (text && p.state !== 'delta') {
       this.text_buf.push(text);
       await this.sendWs({ post_type: 'delta', session_id: this.id, text });
@@ -190,6 +200,7 @@ export class OpenclawSession extends BaseSession {
   async _finishTurn(p) {
     if (!this.turn_active) return;
     this.turn_active = false;
+    this._turnRunId = null;
     this._cancelTurnTimer();
     this.last_activity = Date.now() / 1000;
     const message = p.message || {};
@@ -220,6 +231,7 @@ export class OpenclawSession extends BaseSession {
     if (!this.aborted_sent) {
       this.aborted_sent = true;
       this.turn_active = false;
+      this._turnRunId = null;
       this._cancelTurnTimer();
       const sealed = this._flushTextLog();
       if (sealed) {

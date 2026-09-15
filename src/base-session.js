@@ -320,7 +320,15 @@ export class BaseSession {
     }
     this._armTurnTimer();
     await this.bridge.turnGate();
-    await this._writeTurn(text, echo);
+    try {
+      await this._writeTurn(text, echo);
+    } catch (e) {
+      // 写轮失败（openclaw chat.send 被拒/superseded 等）：不留僵尸 turn_active
+      this.turn_active = false;
+      this._cancelTurnTimer();
+      log('turn_send_err', { session_id: this.id, err: String(e) });
+      await this.sendWs({ post_type: 'error', session_id: this.id, code: 'send_failed', message: String(e), echo });
+    }
   }
 
   async _ensureProcess() { /* overridden */ }
