@@ -257,8 +257,15 @@ export class OpenclawSession extends BaseSession {
     // 且别的写入者的消息不串台（__openclaw.runId 对不上就跳过）
     const m = p.message || {};
     if (m.role && m.role !== 'assistant') return;
+    // 外部写入者串台根治（与 chat/agent 对称）：别的客户端/CLI 直接向这个
+    // 共享 remoteKey 发消息时，其 session.message 事件的 message 里根本没有
+    // __openclaw.runId 字段（payload keys 只有 sessionKey/message/...）。旧守卫
+    // 「rid 和 _turnRunId 都有值且不匹配才 return」对此形同虚设——rid 恒缺、
+    // _turnRunId 为 null/旧值时放行，把别人那轮的"收到"广播成 delta（笔端弹
+    // 通知+未读，但本地无此会话、列表空白、未读永远清不掉）。
+    // 只认本桥正在跑的轮：没跑轮/记录无 runId/runId 不匹配，一律不广播。
     const rid = m.__openclaw && m.__openclaw.runId;
-    if (rid && this._turnRunId && rid !== this._turnRunId) return;
+    if (!this._turnRunId || !rid || rid !== this._turnRunId) return;
     if (this._sawAgentText) return; // assistant 记录与 agent 流同源，不双发
     const text = p.text || m.text || '';
     if (text && p.state !== 'delta') {
