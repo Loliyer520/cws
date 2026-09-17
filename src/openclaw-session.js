@@ -5,7 +5,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { BaseSession } from './base-session.js';
-import { GATEWAYS, gatewayByName, PERMISSION_MODE } from './config.js';
+import { GATEWAYS, gatewayByName, PERMISSION_MODE, TOKEN } from './config.js';
 import { getGateway, onGatewayEvent } from './gateway.js';
 import { log } from './util.js';
 
@@ -171,6 +171,37 @@ export class OpenclawSession extends BaseSession {
     return out;
   }
 
+  /**
+   * 图片块 url → 笔端可达地址。OpenClaw 媒体块 url 是网关 HTTP 的相对路径
+   * （/api/chat/media/...，要 Bearer token，端口不出公网）——改发桥媒体代理的
+   * 相对路径 /oc-media/<gw>/<path>?sig=…（sig = HMAC(桥token, gw+path) 前 16 hex），
+   * 前端按桥地址补全。已是绝对 http(s) 地址的原样放行；别的形态（data:/file:/
+   * 本地路径）够不到，返回空丢弃。
+   */
+  _mediaProxyUrl(u) {
+    const s = String(u || '').trim();
+    if (!s) return '';
+    if (/^https?:\/\//i.test(s)) return s;
+    if (!s.startsWith('/api/chat/media/')) return '';
+    const rest = s.slice('/api/chat/media/'.length).split('?')[0];
+    if (!/^[a-z]+\/[A-Za-z0-9%_.\-]+\/[A-Za-z0-9%_.\-]+\/[A-Za-z0-9_\-]+$/.test(rest)) return '';
+    const gw = String(this.gatewayName || '');
+    const sig = crypto.createHmac('sha256', TOKEN).update(gw + '\n' + rest).digest('hex').slice(0, 16);
+    return '/oc-media/' + encodeURIComponent(gw) + '/' + rest + '?sig=' + sig;
+  }
+
+  /** content[] 里的图片块 → 每图一行 markdown（独占整行，前端按图片块展示）。 */
+  _contentImages(content) {
+    if (!Array.isArray(content)) return '';
+    const lines = [];
+    for (const b of content) {
+      if (!b || typeof b !== 'object' || b.type !== 'image') continue;
+      const url = this._mediaProxyUrl(b.url || b.openUrl || '');
+      if (url) lines.push('![' + String(b.alt || '图片').replace(/[[\]]/g, '') + '](' + url + ')');
+    }
+    return lines.join('\n');
+  }
+
   async _handleChat(p) {
     if (!this._isMine(p)) return;
     // 同一远端会话可能有并发写入者（网关 agent 心跳 cron、dashboard 直连等），
@@ -281,8 +312,11 @@ export class OpenclawSession extends BaseSession {
     this._cancelTurnTimer();
     this.last_activity = Date.now() / 1000;
     const message = p.message || {};
-    const finalText = typeof message === 'string' ? message
+    let finalText = typeof message === 'string' ? message
       : (message.text || this._contentText(message.content) || this.text_buf.join(''));
+    // 图片块不进 text：media 块单独拼成 markdown 图行追加（桥代理签名 URL）
+    const finalImgs = typeof message === 'object' ? this._contentImages(message.content) : '';
+    if (finalImgs) finalText = (finalText ? finalText.replace(/\s+$/, '') + '\n\n' : '') + finalImgs;
     const sealed = this._flushTextLog();
     let finalMid = (sealed || {}).id;
     if (!sealed && finalText && finalText.trim()) {
@@ -366,7 +400,10 @@ export class OpenclawSession extends BaseSession {
       const entries = [];
       for (const m of msgs) {
         const role = (m.role === 'user' || m.author === 'user' || m.from === 'user') ? 'user' : 'cc';
-        const text = m.text || this._contentText(m.content) || this._contentText(m.message && m.message.content) || '';
+        let text = m.text || this._contentText(m.content) || this._contentText(m.message && m.message.content) || '';
+        // 历史同样补图片块（media markdown 追加在正文后）
+        const imgMd = this._contentImages(m.content) || this._contentImages(m.message && m.message.content);
+        if (imgMd) text = (text ? text.replace(/\s+$/, '') + '\n\n' : '') + imgMd;
         if (typeof text === 'string' && text.trim()) entries.push(this._logTurn(role, text));
       }
       return entries;

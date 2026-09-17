@@ -2,15 +2,52 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { WebSocketServer } from 'ws';
 import { Bridge } from './bridge.js';
 import {
-  TOKEN, ONE_TIME_TOKENS, PORT, WEBUI_CFG, persistOneTimeTokens,
+  TOKEN, ONE_TIME_TOKENS, PORT, WEBUI_CFG, persistOneTimeTokens, gatewayByName,
 } from './config.js';
 import { BASE, log, safeEqual } from './util.js';
 
 const bridge = new Bridge();
 const wss = new WebSocketServer({ noServer: true });
+
+/**
+ * OpenClaw 媒体代理：/oc-media/<gw>/<direction>/<sess>/<id>/<size>?sig=…
+ * 网关 /api/chat/media/ 要 Bearer token 且端口不出公网，笔端直连够不到——
+ * openclaw-session 把图片块改写成带 HMAC 签名的本端相对 URL，这里验签后
+ * 用网关 token 取回。sig = HMAC-SHA256(桥token, gw + '\n' + path) 前 16 hex；
+ * 路径白名单死守，只放行媒体形态，变形一律 403。
+ */
+const OC_MEDIA_RE = /^[a-z]+\/[A-Za-z0-9%_.\-]+\/[A-Za-z0-9%_.\-]+\/[A-Za-z0-9_\-]+$/;
+async function serveOcMedia(req, res, urlPath, query) {
+  const m = urlPath.match(/^\/oc-media\/([^/]+)\/(.+)$/);
+  if (!m) { res.writeHead(404).end('not found'); return; }
+  const gwName = decodeURIComponent(m[1]);
+  const rest = m[2];
+  if (!OC_MEDIA_RE.test(rest)) { res.writeHead(403).end('forbidden'); return; }
+  const expect = crypto.createHmac('sha256', TOKEN).update(m[1] + '\n' + rest).digest('hex').slice(0, 16);
+  if (!safeEqual(String(query.get('sig') || ''), expect)) { res.writeHead(403).end('forbidden'); return; }
+  const gw = gatewayByName(gwName);
+  if (!gw || !gw.url) { res.writeHead(404).end('unknown gateway'); return; }
+  const upstream = String(gw.url).replace(/^ws/i, 'http') + '/api/chat/media/' + rest;
+  try {
+    const r = await fetch(upstream, { headers: { authorization: 'Bearer ' + String(gw.token || '') } });
+    if (!r.ok) { res.writeHead(r.status).end('upstream ' + r.status); return; }
+    const buf = Buffer.from(await r.arrayBuffer());
+    res.writeHead(200, {
+      'content-type': r.headers.get('content-type') || 'application/octet-stream',
+      'content-length': buf.length,
+      'cache-control': 'private, max-age=86400',
+    });
+    res.end(buf);
+  } catch (e) {
+    log('oc_media_err', { err: String(e) });
+    if (!res.headersSent) res.writeHead(502);
+    res.end('bad gateway');
+  }
+}
 
 function serveStatic(req, res) {
   const webuiRoot = path.resolve(BASE, WEBUI_CFG.dir);
@@ -41,7 +78,13 @@ function serveStatic(req, res) {
 
 const server = http.createServer((req, res) => {
   // access log: never log query strings (tokens live there)
-  log('http', { method: req.method, path: (req.url || '').split('?')[0] });
+  const rawPath = (req.url || '/').split('?')[0];
+  log('http', { method: req.method, path: rawPath });
+  if (rawPath.startsWith('/oc-media/')) {
+    const query = new URL(req.url || '/', 'http://bridge.local').searchParams;
+    serveOcMedia(req, res, rawPath, query);
+    return;
+  }
   if (WEBUI_CFG.enabled) {
     serveStatic(req, res);
   } else {
