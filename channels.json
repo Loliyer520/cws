@@ -23,6 +23,14 @@
       "protocol": "anthropic",
       "wire_api": "responses",
       "model": "k3"
+    },
+    {
+      "name": "ds",
+      "label": "ds",
+      "base_url": "https://api.scnet.cn/api/llm/v1",
+      "protocol": "openai",
+      "wire_api": "chat",
+      "model": "DeepSeek-V4-Flash-0731"
     }
   ],
   "default_channel": ""
