@@ -78,7 +78,12 @@ function serveStatic(req, res) {
 
 const server = http.createServer((req, res) => {
   // access log: never log query strings (tokens live there)
-  const rawPath = (req.url || '/').split('?')[0];
+  let rawPath = (req.url || '/').split('?')[0];
+  // 前缀化部署的媒体路由：LoliAPP rccws 从 rcWsUrl(wss://host/cws-ws/ws) 推导出
+  // 带 /cws-ws 前缀的图片地址。nginx 对 /cws-ws/oc-media/ 用无 URI 部分的
+  // proxy_pass 原样透传（%3A 一字不动），这里在原始编码形态上剥前缀再验签——
+  // 白名单正则与 HMAC 都按编码后的路径算，任何解码都会 403。
+  if (rawPath.startsWith('/cws-ws/oc-media/')) rawPath = rawPath.slice('/cws-ws'.length);
   log('http', { method: req.method, path: rawPath });
   if (rawPath.startsWith('/oc-media/')) {
     const query = new URL(req.url || '/', 'http://bridge.local').searchParams;
