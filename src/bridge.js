@@ -268,6 +268,9 @@ export class Bridge {
       case 'ping':
         await this._wsSend(ws, { post_type: 'pong', ts: now(), echo });
         break;
+      case 'kx.chat':
+        await this.kxChat(ws, params, echo);
+        break;
       case 'new_session':
         await this.newSession(ws, params, echo);
         break;
@@ -930,6 +933,106 @@ export class Bridge {
         post_type: 'channel_models', channel: name, models: [],
         error: String(e).slice(0, 200), echo,
       });
+    }
+  }
+
+  // ---------- 卡西（手表助手）LLM 代理 ----------
+  // 密钥留在服务端：手表只发 openai 风格 messages + 工具定义（tools 用
+  // {name,description,parameters} 简写），渠道是 anthropic 协议时在此转换。
+  // 回 kx_reply：content 文本 + tool_calls[{id,name,arguments(对象)}]。
+  async kxChat(ws, params, echo) {
+    const ch = (params.channel && channelByName(params.channel))
+      || (channelState.defaultChannel && channelByName(channelState.defaultChannel))
+      || API_CHANNELS.find((c) => c && c.base_url && c.api_key);
+    const fail = (error) => this._wsSend(ws, { post_type: 'kx_reply', ok: false, error, echo });
+    if (!ch || !ch.base_url || !ch.api_key) {
+      await fail('没有可直连的渠道（需配 base_url + api_key）');
+      return;
+    }
+    const model = String(params.model || ch.model || '');
+    const messages = Array.isArray(params.messages) ? params.messages : [];
+    const tools = Array.isArray(params.tools) ? params.tools : [];
+    const maxTokens = Number(params.max_tokens) || 1024;
+    const base = ch.base_url.replace(/\/+$/, '');
+    try {
+      let content = '';
+      const toolCalls = [];
+      if (ch.protocol === 'openai') {
+        const body = { model, max_tokens: maxTokens, messages };
+        if (tools.length) {
+          body.tools = tools.map((t) => ({
+            type: 'function',
+            function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } },
+          }));
+          body.tool_choice = 'auto';
+        }
+        const resp = await fetch(this._apiPath(base, '/chat/completions'), {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + ch.api_key },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
+        });
+        const text = await resp.text();
+        if (resp.status !== 200) { await fail('HTTP ' + resp.status + ': ' + text.slice(0, 200)); return; }
+        const data = JSON.parse(text);
+        const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
+        content = typeof msg.content === 'string' ? msg.content : '';
+        for (const tc of msg.tool_calls || []) {
+          let args = {};
+          try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch { /* 上游参数非 JSON 时按空对象 */ }
+          toolCalls.push({ id: tc.id, name: tc.function && tc.function.name, arguments: args });
+        }
+      } else {
+        // anthropic 协议：openai 风格消息 → 块结构（tool 消息并入下一条 user 的 tool_result 块）
+        const sys = [];
+        const amsg = [];
+        for (const m of messages) {
+          if (m.role === 'system') { if (m.content) sys.push(String(m.content)); continue; }
+          if (m.role === 'tool') {
+            const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content || '') };
+            const last = amsg[amsg.length - 1];
+            if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(block);
+            else amsg.push({ role: 'user', content: [block] });
+            continue;
+          }
+          if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+            const blocks = [];
+            if (m.content) blocks.push({ type: 'text', text: String(m.content) });
+            for (const tc of m.tool_calls) blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments || {} });
+            amsg.push({ role: 'assistant', content: blocks });
+            continue;
+          }
+          amsg.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
+        }
+        const body = { model, max_tokens: maxTokens, messages: amsg };
+        if (sys.length) body.system = sys.join('\n\n');
+        if (tools.length) {
+          body.tools = tools.map((t) => ({
+            name: t.name, description: t.description || '',
+            input_schema: t.parameters || { type: 'object', properties: {} },
+          }));
+        }
+        const resp = await fetch(this._apiPath(base, '/messages'), {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': '2023-06-01',
+            'x-api-key': ch.api_key,
+            authorization: 'Bearer ' + ch.api_key,
+          },
+          body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
+        });
+        const text = await resp.text();
+        if (resp.status !== 200) { await fail('HTTP ' + resp.status + ': ' + text.slice(0, 200)); return; }
+        const data = JSON.parse(text);
+        for (const b of data.content || []) {
+          if (b.type === 'text' && b.text) content += b.text;
+          else if (b.type === 'tool_use') toolCalls.push({ id: b.id, name: b.name, arguments: b.input || {} });
+        }
+      }
+      await this._wsSend(ws, { post_type: 'kx_reply', ok: true, channel: ch.name, model, content, tool_calls: toolCalls, echo });
+      log('kx_chat', { channel: ch.name, model, tools: toolCalls.length, chars: content.length });
+    } catch (e) {
+      await fail(String((e && e.message) || e).slice(0, 200));
     }
   }
 
