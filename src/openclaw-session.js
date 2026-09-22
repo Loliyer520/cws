@@ -4,10 +4,11 @@
 // approval.resolve / sessions.patch, with 'chat' delta-final event streaming.
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import path from 'node:path';
 import { BaseSession } from './base-session.js';
-import { GATEWAYS, gatewayByName, PERMISSION_MODE, TOKEN } from './config.js';
+import { GATEWAYS, WORKSPACES, gatewayByName, PERMISSION_MODE, TOKEN } from './config.js';
 import { getGateway, onGatewayEvent } from './gateway.js';
-import { log } from './util.js';
+import { isValidSid, log } from './util.js';
 
 const OPENCLAW_PERMISSIONS = ['read-only', 'guarded', 'workspace', 'full'];
 
@@ -547,20 +548,50 @@ export class OpenclawSession extends BaseSession {
 
   async _killProcess() { /* remote session persists; nothing to kill */ }
 
+  /**
+   * remote_key 是否还有别的持有者（盘上其它 workspace 的 sess.json 或内存
+   * 会话）。探针/接管/重建残留会让多个桥会话指向同一远端会话——此时任何
+   * 一个被 drop 都不能删远端 transcript（deleteTranscript 连坐删的是共享
+   * 的正主记录，实测用户清测试会话把主会话上下文全灭）。只删最后一个
+   * 持有者。
+   */
+  _remoteKeyShared() {
+    try {
+      const ents = fs.readdirSync(WORKSPACES, { withFileTypes: true });
+      for (const ent of ents) {
+        if (!ent.isDirectory() || !isValidSid(ent.name) || ent.name === this.id) continue;
+        try {
+          const meta = JSON.parse(fs.readFileSync(path.join(WORKSPACES, ent.name, 'sess.json'), 'utf8'));
+          if (meta && meta.remote_key === this.remoteKey) return true;
+        } catch { continue }
+      }
+    } catch { /* fallthrough */ }
+    if (this.bridge && this.bridge.sessions) {
+      for (const s of this.bridge.sessions.values()) {
+        if (s !== this && s.remoteKey === this.remoteKey) return true;
+      }
+    }
+    return false;
+  }
+
   async close(reason = 'dropped', notify = true, echo = null) {
     if (this._off) { this._off(); this._off = null; }
     // 用户销毁：远端网关的会话+transcript 一并删（别的关闭原因不动远端）
     if (reason === 'dropped' && this.remoteKey) {
-      try {
-        const gw = await getGateway(this.gatewayName);
-        await gw.client.request('sessions.delete', {
-          key: this.remoteKey,
-          agentId: this.agentId || undefined,
-          deleteTranscript: true,
-        });
-        log('openclaw_remote_deleted', { session_id: this.id, remote_key: this.remoteKey });
-      } catch (e) {
-        log('openclaw_remote_delete_err', { session_id: this.id, err: String(e) });
+      if (this._remoteKeyShared()) {
+        log('openclaw_remote_shared_skip_delete', { session_id: this.id, remote_key: this.remoteKey });
+      } else {
+        try {
+          const gw = await getGateway(this.gatewayName);
+          await gw.client.request('sessions.delete', {
+            key: this.remoteKey,
+            agentId: this.agentId || undefined,
+            deleteTranscript: true,
+          });
+          log('openclaw_remote_deleted', { session_id: this.id, remote_key: this.remoteKey });
+        } catch (e) {
+          log('openclaw_remote_delete_err', { session_id: this.id, err: String(e) });
+        }
       }
     }
     await super.close(reason, notify, echo);
