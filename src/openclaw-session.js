@@ -41,6 +41,7 @@ export class OpenclawSession extends BaseSession {
     this._agentItems = new Map(); // assistant itemId -> 已转发的累计字符数
     this._seenTools = new Set();  // 已播报的 toolCallId
     this._sawAgentText = false;   // 见过 agent assistant 流后忽略 chat delta（同源双发）
+    this._turnMedia = [];         // agent 流 mediaUrls 收集的本轮图片（final 时拼 markdown）
     if (!OPENCLAW_PERMISSIONS.includes(this.permission_mode)) {
       this.permission_mode = 'read-only';
       this.launch_mode = 'read-only';
@@ -138,6 +139,8 @@ export class OpenclawSession extends BaseSession {
     this._agentItems = new Map();
     this._seenTools = new Set();
     this._sawAgentText = false;
+    this._turnMedia = [];
+    this._turnStartMs = Date.now();
     const res = await gw.client.request('chat.send', {
       sessionKey: this.remoteKey,
       agentId: this.agentId || undefined,
@@ -190,16 +193,23 @@ export class OpenclawSession extends BaseSession {
     return '/oc-media/' + encodeURIComponent(gw) + '/' + rest + '?sig=' + sig;
   }
 
-  /** content[] 里的图片块 → 每图一行 markdown（独占整行，前端按图片块展示）。 */
-  _contentImages(content) {
-    if (!Array.isArray(content)) return '';
-    const lines = [];
+  /** content[] 里的图片块 → [{url(原始), alt}]；_contentImages/_finishTurn 共用。 */
+  _contentImageEntries(content) {
+    if (!Array.isArray(content)) return [];
+    const out = [];
     for (const b of content) {
       if (!b || typeof b !== 'object' || b.type !== 'image') continue;
-      const url = this._mediaProxyUrl(b.url || b.openUrl || '');
-      if (url) lines.push('![' + String(b.alt || '图片').replace(/[[\]]/g, '') + '](' + url + ')');
+      const url = String(b.url || b.openUrl || '');
+      if (url) out.push({ url, alt: String(b.alt || '图片').replace(/[[\]]/g, '') });
     }
-    return lines.join('\n');
+    return out;
+  }
+
+  /** content[] 里的图片块 → 每图一行 markdown（独占整行，前端按图片块展示）。 */
+  _contentImages(content) {
+    return this._contentImageEntries(content)
+      .map(e => { const u = this._mediaProxyUrl(e.url); return u ? '![' + e.alt + '](' + u + ')' : ''; })
+      .filter(Boolean).join('\n');
   }
 
   async _handleChat(p) {
@@ -234,6 +244,15 @@ export class OpenclawSession extends BaseSession {
     if (p.stream === 'assistant') {
       // text 是该 item 的累计全文：按 itemId 记已发长度，只发增量。
       // 间隙文本（工具之间的 assistant 段）也走这里，工具播报时封口落盘。
+      // mediaUrls：MEDIA: 指令产生的图片块只挂在 assistant 流上（chat final
+      // 的 message 为空、content 图片块只在 history 记录里）——逐个收集，
+      // _finishTurn 时拼 oc-media markdown，否则笔端永远收不到图
+      if (d.mediaUrls && typeof d.mediaUrls === 'object') {
+        for (const mk of Object.keys(d.mediaUrls)) {
+          const mu = d.mediaUrls[mk];
+          if (typeof mu === 'string' && mu && this._turnMedia.indexOf(mu) < 0) this._turnMedia.push(mu);
+        }
+      }
       const itemId = d.itemId || '_';
       const text = typeof d.text === 'string' ? d.text : '';
       const prev = this._agentItems.get(itemId) || 0;
@@ -305,6 +324,23 @@ export class OpenclawSession extends BaseSession {
     }
   }
 
+  /** 就地改写 turnlog 磁盘上指定 id 条目的文本（final 补图行用；文件小，整读整写）。 */
+  _patchTurnDiskEntry(id, text) {
+    try {
+      const p = this._turnlogPath();
+      const lines = fs.readFileSync(p, 'utf8').split('\n');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const l = lines[i].trim();
+        if (!l) continue;
+        try {
+          const o = JSON.parse(l);
+          if (o && o.id === id) { o.text = text; lines[i] = JSON.stringify(o); break; }
+        } catch { continue; }
+      }
+      fs.writeFileSync(p, lines.join('\n'));
+    } catch { /* disk is best-effort */ }
+  }
+
   async _finishTurn(p) {
     if (!this.turn_active) return;
     this.turn_active = false;
@@ -314,13 +350,65 @@ export class OpenclawSession extends BaseSession {
     const message = p.message || {};
     let finalText = typeof message === 'string' ? message
       : (message.text || this._contentText(message.content) || this.text_buf.join(''));
-    // 图片块不进 text：media 块单独拼成 markdown 图行追加（桥代理签名 URL）
-    const finalImgs = typeof message === 'object' ? this._contentImages(message.content) : '';
+    // 图片块不进 text：media 块单独拼成 markdown 图行追加（桥代理签名 URL）。
+    // 三源去重合并（按原始 url 一生一次，_sentMediaUrls 跨轮去重）：
+    //  1) chat final 的 message.content（部分提供者才带）
+    //  2) agent 流 mediaUrls（MEDIA: 指令图片的活来源——final 的 message 是空的）
+    //  3) chat.history 尾部回拉：流被排队/挤掉时（上一轮未结束就发新消息）图片
+    //     只落成 runId 为空的 image 记录，事件侧任何字段都不带——只能查记录补收
+    if (!this._sentMediaUrls) this._sentMediaUrls = new Set();
+    const adopted = []; // [{url, alt}]
+    const adopt = (url, alt) => {
+      if (!url || this._sentMediaUrls.has(url)) return;
+      this._sentMediaUrls.add(url);
+      adopted.push({ url, alt });
+    };
+    if (typeof message === 'object') {
+      for (const e of this._contentImageEntries(message.content)) adopt(e.url, e.alt);
+    }
+    for (const mu of this._turnMedia) adopt(mu, '图片');
+    const turnMediaSeen = this._turnMedia.length;
+    this._turnMedia = [];
+    const adoptHistoryTail = async () => {
+      const gw = await getGateway(this.gatewayName);
+      const res = await gw.client.request('chat.history', { sessionKey: this.remoteKey, limit: 15 });
+      const tail = (res && (res.messages || res.items)) || [];
+      const winStart = (this._turnStartMs || 0) - 60000; // 网关/桥钟差 + 排队竞态余量
+      const hist = [];
+      for (const rec of tail) {
+        if (rec.role && rec.role !== 'assistant') continue;
+        const ts = rec.__openclaw && rec.__openclaw.recordTimestampMs;
+        if (!ts || ts < winStart) continue; // 只收本轮窗口内的记录，旧图已由 syncHistory 落过盘
+        for (const e of this._contentImageEntries(rec.content || (rec.message && rec.message.content))) hist.push(e);
+      }
+      for (const e of hist.slice(-4)) adopt(e.url, e.alt); // 兜底补收，限 4 张防陈图倾倒
+    };
+    try { await adoptHistoryTail(); } catch (e) { /* 回拉失败不拦 final 主路 */ }
+    // 竞态兜底：流上见过 MEDIA:（mediaUrls 落的是网关本地裸路径，代理够不到，
+    // 图记录带正规 /api/chat/media/ URL）但一张图都没收敛——记录落库晚于 final
+    // 事件时第一次回拉会扑空，短等重拉一次再放弃
+    if (!adopted.length && turnMediaSeen) {
+      await new Promise((r) => setTimeout(r, 600));
+      try { await adoptHistoryTail(); } catch (e) { /* 同上，best-effort */ }
+    }
+    const seenImg = new Set();
+    let finalImgs = '';
+    for (const e of adopted) {
+      const u = this._mediaProxyUrl(e.url);
+      if (!u || seenImg.has(u)) continue;
+      seenImg.add(u);
+      finalImgs = (finalImgs ? finalImgs + '\n' : '') + '![' + e.alt + '](' + u + ')';
+    }
     if (finalImgs) finalText = (finalText ? finalText.replace(/\s+$/, '') + '\n\n' : '') + finalImgs;
     const sealed = this._flushTextLog();
     let finalMid = (sealed || {}).id;
     if (!sealed && finalText && finalText.trim()) {
       finalMid = (this._logTurn('cc', finalText) || {}).id;
+    } else if (sealed && finalImgs && sealed.role === 'cc') {
+      // 流式轮的正文在工具边界已按 mid 封口落盘，此刻只差图行：补进同 mid
+      // 条目（内存 + 磁盘就地改写），断线重连的 replay 不丢图
+      sealed.text = sealed.text.replace(/\s+$/, '') + '\n\n' + finalImgs;
+      this._patchTurnDiskEntry(sealed.id, sealed.text);
     }
     const usage = p.usage || {};
     await this.sendWs({
@@ -401,7 +489,11 @@ export class OpenclawSession extends BaseSession {
       for (const m of msgs) {
         const role = (m.role === 'user' || m.author === 'user' || m.from === 'user') ? 'user' : 'cc';
         let text = m.text || this._contentText(m.content) || this._contentText(m.message && m.message.content) || '';
-        // 历史同样补图片块（media markdown 追加在正文后）
+        // 历史同样补图片块（media markdown 追加在正文后）；
+        // 已落盘的图登记进 _sentMediaUrls，_finishTurn 的尾部回拉才不会重复补发
+        const imgEs = this._contentImageEntries(m.content).concat(this._contentImageEntries(m.message && m.message.content));
+        if (!this._sentMediaUrls) this._sentMediaUrls = new Set();
+        for (const e of imgEs) this._sentMediaUrls.add(e.url);
         const imgMd = this._contentImages(m.content) || this._contentImages(m.message && m.message.content);
         if (imgMd) text = (text ? text.replace(/\s+$/, '') + '\n\n' : '') + imgMd;
         if (typeof text === 'string' && text.trim()) entries.push(this._logTurn(role, text));
