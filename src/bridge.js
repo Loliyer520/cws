@@ -136,7 +136,7 @@ export class Bridge {
       post_type: 'session_ready', session_id: s.id,
       model: s.model_name, channel: (s.channel || {}).name,
       turn_active: s.turn_active, permission_mode: s.permission_mode,
-      backend: s.backend, echo,
+      backend: s.backend, gateway: s.gatewayName || null, echo,
     });
   }
 
@@ -332,6 +332,7 @@ export class Bridge {
             channel: (s.channel || {}).name,
             model: s.model_name,
             backend: s.backend,
+            gateway: s.gatewayName || null,
             permission_mode: s.permission_mode,
             title: s.turnTitle(),
             remark: s.remark || '',
@@ -386,6 +387,7 @@ export class Bridge {
             channel: meta.channel || null,
             model: meta.model || null,
             backend: meta.backend || 'claude',
+            gateway: meta.gateway || null,
             permission_mode: meta.permission_mode || null,
             title,
             remark: meta.remark || '',
@@ -541,7 +543,7 @@ export class Bridge {
     if (!s.turn_active) {
       await this._wsSend(ws, { post_type: 'send_ack', session_id: sid, echo });
     }
-    await s.startTurn(params.text || '', echo);
+    await s.startTurn(params.text || '', echo, params.images);
   }
 
   async newSession(ws, params, echo) {
@@ -603,6 +605,7 @@ export class Bridge {
         turn_active: existing.turn_active,
         permission_mode: existing.permission_mode,
         backend: existing.backend,
+        gateway: existing.gatewayName || null,
         echo,
       });
       log('takeover', {
@@ -645,7 +648,7 @@ export class Bridge {
         post_type: 'session_ready', session_id: sid,
         model: s.model_name, channel: (s.channel || {}).name,
         turn_active: s.turn_active, permission_mode: s.permission_mode,
-        backend: s.backend, echo,
+        backend: s.backend, gateway: s.gatewayName || null, echo,
       });
       const warm = replay.length && this.activeCount() < this.maxActive && s.backend === 'claude';
       if (warm) s._warmStart().catch(() => {});
@@ -727,7 +730,7 @@ export class Bridge {
           post_type: 'session_ready', session_id: sid,
           model: s.model_name, channel: (s.channel || {}).name,
           turn_active: s.turn_active, permission_mode: s.permission_mode,
-          backend: s.backend, echo,
+          backend: s.backend, gateway: s.gatewayName || null, echo,
         });
         log('sync_attach', { session_id: sid, turn_active: s.turn_active });
       }

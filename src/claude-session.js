@@ -150,14 +150,20 @@ export class ClaudeSession extends BaseSession {
     }
   }
 
-  async _writeTurn(text) {
+  async _writeTurn(text, echo, images) {
+    // stream-json 的 user 消息原生支持 content 块数组：文字块 + 图片块
+    const content = [];
+    if (text) content.push({ type: 'text', text });
+    for (const im of images || []) {
+      content.push({ type: 'image', source: { type: 'base64', media_type: im.media_type, data: im.data } });
+    }
     await this._writeLine({
       type: 'user',
-      message: { role: 'user', content: [{ type: 'text', text }] },
+      message: { role: 'user', content },
       parent_tool_use_id: null,
       session_id: this.cli_uuid,
     });
-    log('turn_start', { session_id: this.id });
+    log('turn_start', { session_id: this.id, images: (images || []).length });
   }
 
   async _writeLine(obj) {

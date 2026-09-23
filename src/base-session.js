@@ -12,6 +12,23 @@ export const STREAM_POST_TYPES = new Set([
   'turn_aborted', 'ask', 'ask_replied', 'session_closed',
 ]);
 
+/** 发图清洗：最多 3 张、media_type 白名单、纯 base64（容忍 data: 前缀）、
+ *  单张编码串 ≤6MB。非法项静默丢弃，坏帧当没带图处理。 */
+function sanitizeImages(images) {
+  if (!Array.isArray(images)) return [];
+  const out = [];
+  for (const im of images.slice(0, 3)) {
+    if (!im || typeof im !== 'object') continue;
+    const mt = String(im.media_type || '');
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(mt)) continue;
+    const data = String(im.data || '').replace(/^data:[^,]*,/, '');
+    if (!/^[A-Za-z0-9+/=]+$/.test(data) || data.length < 16) continue;
+    if (data.length > 6 * 1024 * 1024) continue;
+    out.push({ media_type: mt, data });
+  }
+  return out;
+}
+
 export class BaseSession {
   constructor(bridge, sid, ws, opts = {}) {
     this.bridge = bridge;
@@ -304,9 +321,16 @@ export class BaseSession {
   async _askTimeout() { /* overridden by claude */ }
 
   // ---------- turn entry (backend-specific: startTurn/abort) ----------
-  async startTurn(text, echo) {
+  async startTurn(text, echo, images) {
     if (this.turn_active) {
       await this.sendWs({ post_type: 'error', session_id: this.id, code: 'busy', message: 'turn in progress', echo });
+      return;
+    }
+    const imgs = sanitizeImages(images);
+    if (imgs.length && this.backend !== 'claude') {
+      // codex 走 argv、openclaw chat.send 只收文本——都没有图片通道，明确拒绝
+      await this.sendWs({ post_type: 'error', session_id: this.id, code: 'no_image_support',
+        message: '该后端暂不支持发图（仅 Claude 支持）', echo });
       return;
     }
     await this._ensureProcess();
@@ -317,14 +341,21 @@ export class BaseSession {
     this.turn_echo = echo;
     this.last_activity = now();
     this.last_turn_at = this.last_activity;
-    const uEntry = this._logTurn('user', text);
+    // base64 不进 turnlog（爆盘 + 回放拉历史会淹 WS）：落盘/回显用占位文本，
+    // 真图片数据只随本轮 user_msg 帧推给在线客户端
+    const shown = imgs.length
+      ? (text ? text + '\n[图片 ×' + imgs.length + ']' : '[图片 ×' + imgs.length + ']')
+      : text;
+    const uEntry = this._logTurn('user', shown);
     if (uEntry) {
-      await this.sendWs({ post_type: 'user_msg', session_id: this.id, mid: uEntry.id, text });
+      const uFrame = { post_type: 'user_msg', session_id: this.id, mid: uEntry.id, text: shown };
+      if (imgs.length) uFrame.images = imgs;
+      await this.sendWs(uFrame);
     }
     this._armTurnTimer();
     await this.bridge.turnGate();
     try {
-      await this._writeTurn(text, echo);
+      await this._writeTurn(text, echo, imgs);
     } catch (e) {
       // 写轮失败（openclaw chat.send 被拒/superseded 等）：不留僵尸 turn_active
       this.turn_active = false;
