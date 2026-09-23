@@ -958,10 +958,13 @@ export class Bridge {
     const model = String(params.model || ch.model || '');
     const messages = Array.isArray(params.messages) ? params.messages : [];
     const tools = Array.isArray(params.tools) ? params.tools : [];
-    const maxTokens = Number(params.max_tokens) || 1024;
+    // 下限 2048：思考型模型（glm-5.3 等）思考块与正文共用 max_tokens，
+    // 手表给的 1024 会被思考吃光 → 正文被掐成空轮
+    const maxTokens = Math.max(2048, Number(params.max_tokens) || 1024);
     const base = ch.base_url.replace(/\/+$/, '');
     try {
       let content = '';
+      let think = '';
       const toolCalls = [];
       if (ch.protocol === 'openai') {
         const body = { model, max_tokens: maxTokens, messages };
@@ -987,6 +990,8 @@ export class Bridge {
           try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch { /* 上游参数非 JSON 时按空对象 */ }
           toolCalls.push({ id: tc.id, name: tc.function && tc.function.name, arguments: args });
         }
+        // 深度思考渠道正文为空时回退 reasoning_content，同 anthropic 的思考块兜底
+        if (!content && !toolCalls.length && msg.reasoning_content) content = String(msg.reasoning_content);
       } else {
         // anthropic 协议：openai 风格消息 → 块结构（tool 消息并入下一条 user 的 tool_result 块）
         const sys = [];
@@ -1032,8 +1037,12 @@ export class Bridge {
         const data = JSON.parse(text);
         for (const b of data.content || []) {
           if (b.type === 'text' && b.text) content += b.text;
+          else if (b.type === 'thinking' && b.thinking) think += b.thinking;
           else if (b.type === 'tool_use') toolCalls.push({ id: b.id, name: b.name, arguments: b.input || {} });
         }
+        // glm-5.3 偶发把答案全写进思考块就收轮（无 text 无 tool_use）→
+        // 回退取思考内容当回复，否则手表那轮什么都不显示（"说话断断续续"的空轮）
+        if (!content && !toolCalls.length && think) content = think;
       }
       await this._wsSend(ws, { post_type: 'kx_reply', ok: true, channel: ch.name, model, content, tool_calls: toolCalls, echo });
       log('kx_chat', { channel: ch.name, model, tools: toolCalls.length, chars: content.length });
