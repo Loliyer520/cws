@@ -1014,7 +1014,9 @@ export class Bridge {
           }
           amsg.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
         }
-        const body = { model, max_tokens: maxTokens, messages: amsg };
+        // 显式关思考：glm-5.3 思考块与正文共用 max_tokens，且偶发把答案全写进
+        // 思考块/长篇思维链被兜底放出（手表上 7 千字思维链正文就是这么来的）
+        const body = { model, max_tokens: maxTokens, messages: amsg, thinking: { type: 'disabled' } };
         if (sys.length) body.system = sys.join('\n\n');
         if (tools.length) {
           body.tools = tools.map((t) => ({
