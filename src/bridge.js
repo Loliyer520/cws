@@ -552,6 +552,9 @@ export class Bridge {
       await this._wsSend(ws, { post_type: 'error', code: 'bad_session_id', echo });
       return;
     }
+    // 客户端自带的 new: 标记回传：session_ready 原先只回外层 echo，webui/手表
+    // 按 new: 前缀匹配"创建后自动进会话"的路径从未触发过（都靠手点列表兜底）
+    if (params.echo) echo = params.echo;
     // explicit channel must exist; default channel applies only to brand-new sessions
     let channel = null;
     if (params.channel) {
