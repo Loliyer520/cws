@@ -10,7 +10,7 @@ import { GATEWAYS, WORKSPACES, gatewayByName, PERMISSION_MODE, TOKEN } from './c
 import { getGateway, onGatewayEvent } from './gateway.js';
 import { isValidSid, log } from './util.js';
 
-const OPENCLAW_PERMISSIONS = ['read-only', 'guarded', 'workspace', 'full'];
+export const OPENCLAW_PERMISSIONS = ['read-only', 'guarded', 'workspace', 'full'];
 
 export class OpenclawSession extends BaseSession {
   constructor(bridge, sid, ws, opts = {}) {

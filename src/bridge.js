@@ -5,7 +5,7 @@ import path from 'node:path';
 import { BaseSession } from './base-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
-import { OpenclawSession } from './openclaw-session.js';
+import { OpenclawSession, OPENCLAW_PERMISSIONS } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
   IDLE_TIMEOUT, WS_RETENTION_S, API_CHANNELS, channelState, setDefaultChannel, channelByName,
@@ -264,6 +264,19 @@ export class Bridge {
     const action = frame.action;
     const params = frame.params || {};
     const echo = frame.echo;
+    // 会话定向动作先重绑连接：非广播回帧（permission_ack 等）走 session.ws
+    // 单播，若还绑在早已断开的旧连接上，操作者会静默无响应——谁在操作这个
+    // 会话，回帧就跟谁（与 takeover 的 s.ws = ws 语义一致）
+    {
+      const sid0 = params.session_id;
+      if (typeof sid0 === 'string') {
+        const s0 = this.sessions.get(sid0);
+        if (s0 && !s0.closed && s0.ws !== ws) {
+          s0.ws = ws;
+          s0.detached = false;
+        }
+      }
+    }
     switch (action) {
       case 'ping':
         await this._wsSend(ws, { post_type: 'pong', ts: now(), echo });
@@ -452,6 +465,24 @@ export class Bridge {
       case 'set_permission': {
         const s = this.sessions.get(params.session_id);
         if (!s || s.closed) {
+          // lazy 会话（idle 回收/桥重启后不在内存）：权限直接落盘 sess.json
+          // （同 session.remark 思路），复活路径读 meta.permission_mode 生效——
+          // 不为一行权限切换拉起整个会话
+          const sid = params.session_id;
+          const mode = String(params.mode || '');
+          const modes = { claude: ['default', 'acceptEdits', 'bypassPermissions', 'plan'], codex: ['read-only', 'workspace-write', 'full-auto', 'danger-full-access'], openclaw: OPENCLAW_PERMISSIONS };
+          const meta = isValidSid(sid) && fs.existsSync(path.join(WORKSPACES, sid, 'turnlog.jsonl'))
+            ? loadSessMetaRaw(sid) : null;
+          if (meta && (modes[meta.backend || 'claude'] || []).includes(mode)) {
+            try {
+              meta.permission_mode = mode;
+              fs.writeFileSync(path.join(WORKSPACES, sid, 'sess.json'), JSON.stringify(meta));
+              await this._wsSend(ws, { post_type: 'permission_ack', session_id: sid, mode, applied: false, echo });
+            } catch {
+              await this._wsSend(ws, { post_type: 'error', code: 'permission_save_failed', session_id: sid, echo });
+            }
+            break;
+          }
           await this._wsSend(ws, {
             post_type: 'error', code: 'unknown_session', session_id: params.session_id, echo,
           });
