@@ -989,9 +989,9 @@ export class Bridge {
     const model = String(params.model || ch.model || '');
     const messages = Array.isArray(params.messages) ? params.messages : [];
     const tools = Array.isArray(params.tools) ? params.tools : [];
-    // 下限 2048：思考型模型（glm-5.3 等）思考块与正文共用 max_tokens，
-    // 手表给的 1024 会被思考吃光 → 正文被掐成空轮
-    const maxTokens = Math.max(2048, Number(params.max_tokens) || 1024);
+    // 下限 3072：思考预算（1024）与正文共用 max_tokens（glm-5.3 等），
+    // 手表给的 1024 连思考都不够 → 正文被掐成空轮；提额保证预算之外正文仍有空间
+    const maxTokens = Math.max(3072, Number(params.max_tokens) || 1024);
     const base = ch.base_url.replace(/\/+$/, '');
     try {
       let content = '';
@@ -1045,9 +1045,10 @@ export class Bridge {
           }
           amsg.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
         }
-        // 显式关思考：glm-5.3 思考块与正文共用 max_tokens，且偶发把答案全写进
-        // 思考块/长篇思维链被兜底放出（手表上 7 千字思维链正文就是这么来的）
-        const body = { model, max_tokens: maxTokens, messages: amsg, thinking: { type: 'disabled' } };
+        // 思考开+限预算：全关思考 glm-5.3 的工具编排严重降智（不看会话乱发
+        // 指令/多轮后忘工具用法/光应承不调工具），全开则思考与正文抢
+        // max_tokens 且偶发把答案全写进思考块——budget_tokens 封顶思考长度，两头兼顾
+        const body = { model, max_tokens: maxTokens, messages: amsg, thinking: { type: 'enabled', budget_tokens: 1024 } };
         if (sys.length) body.system = sys.join('\n\n');
         if (tools.length) {
           body.tools = tools.map((t) => ({
@@ -1055,7 +1056,7 @@ export class Bridge {
             input_schema: t.parameters || { type: 'object', properties: {} },
           }));
         }
-        const resp = await fetch(this._apiPath(base, '/messages'), {
+        const post = (b) => fetch(this._apiPath(base, '/messages'), {
           method: 'POST',
           headers: {
             'content-type': 'application/json',
@@ -1063,19 +1064,31 @@ export class Bridge {
             'x-api-key': ch.api_key,
             authorization: 'Bearer ' + ch.api_key,
           },
-          body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
+          body: JSON.stringify(b), signal: AbortSignal.timeout(90000),
         });
-        const text = await resp.text();
+        let resp = await post(body);
+        let text = await resp.text();
         if (resp.status !== 200) { await fail('HTTP ' + resp.status + ': ' + text.slice(0, 200)); return; }
-        const data = JSON.parse(text);
-        for (const b of data.content || []) {
-          if (b.type === 'text' && b.text) content += b.text;
-          else if (b.type === 'thinking' && b.thinking) think += b.thinking;
-          else if (b.type === 'tool_use') toolCalls.push({ id: b.id, name: b.name, arguments: b.input || {} });
+        const extract = (d) => {
+          content = ''; think = ''; toolCalls.length = 0;
+          for (const b of d.content || []) {
+            if (b.type === 'text' && b.text) content += b.text;
+            else if (b.type === 'thinking' && b.thinking) think += b.thinking;
+            else if (b.type === 'tool_use') toolCalls.push({ id: b.id, name: b.name, arguments: b.input || {} });
+          }
+        };
+        extract(JSON.parse(text));
+        // 空轮（无正文无工具）先催答重试一次：budget 下仍偶发答案全在思考里就
+        // 收轮。重试也空才退思考内容当回复（budget 已封顶，不会再倒 7 千字思维链）
+        if (!content && !toolCalls.length) {
+          const think0 = think;
+          try {
+            resp = await post({ ...body, messages: [...amsg, { role: 'user', content: '（请直接给出最终回复）' }] });
+            text = await resp.text();
+            if (resp.status === 200) extract(JSON.parse(text));
+          } catch { /* 重试失败走兜底 */ }
+          if (!content && !toolCalls.length && think0) content = think0;
         }
-        // glm-5.3 偶发把答案全写进思考块就收轮（无 text 无 tool_use）→
-        // 回退取思考内容当回复，否则手表那轮什么都不显示（"说话断断续续"的空轮）
-        if (!content && !toolCalls.length && think) content = think;
       }
       await this._wsSend(ws, { post_type: 'kx_reply', ok: true, channel: ch.name, model, content, tool_calls: toolCalls, echo });
       log('kx_chat', { channel: ch.name, model, tools: toolCalls.length, chars: content.length });
