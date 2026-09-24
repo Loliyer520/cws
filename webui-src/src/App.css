@@ -240,9 +240,8 @@ body {
   font-size: 11.5px; color: var(--ink-faint);
   font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  flex-shrink: 1;
 }
-.ch-ctrls { display: flex; gap: 6px; align-items: center; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+.ch-icon.on { background: var(--tint-strong); color: var(--ink); }
 .ctrl {
   font-family: inherit; font-size: 12.5px;
   border: none; border-radius: 10px;
@@ -252,7 +251,35 @@ body {
   max-width: 150px;
 }
 .ctrl:hover, .ctrl:focus { background: var(--tint-strong); }
-.ch-model { width: 130px; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.ch-model { font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+
+/* 会话设置卡片（齿轮展开） */
+.session-set {
+  flex-shrink: 0;
+  margin: 12px 24px 0;
+  background: var(--tint);
+  border-radius: 18px;
+  padding: 14px 18px 13px;
+  animation: msgIn .35s cubic-bezier(.16,1,.3,1) both;
+}
+.set-grid {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(130px, 1.1fr) minmax(220px, 1.6fr);
+  gap: 14px;
+}
+.set-field { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
+.set-label {
+  font-size: 11px; font-weight: 500; letter-spacing: .1em;
+  color: var(--ink-faint);
+}
+.set-row { display: flex; gap: 8px; }
+.set-row input { flex: 1; min-width: 0; }
+.session-set .ctrl { padding: 8px 10px; font-size: 13px; max-width: none; }
+.session-set select.ctrl { width: 100%; }
+.session-set .ch-model { width: auto; }
+.set-hint {
+  margin-top: 12px; font-size: 11.5px; color: var(--ink-faint); line-height: 1.7;
+}
 
 /* ---------- 消息流 ---------- */
 .scroll { flex: 1; overflow-y: auto; padding: 28px 24px 12px; scroll-behavior: smooth; }
@@ -703,9 +730,10 @@ body {
   .actions .ghost { padding: 5px 9px; font-size: 12.5px; }
 
   .chat-head { padding: 8px 14px 10px; }
-  .ch-ctrl-row { flex-direction: column; align-items: stretch; gap: 6px; }
-  .ch-ctrls { justify-content: flex-start; }
-  .ch-model { width: 110px; }
+
+  .session-set { margin: 10px 14px 0; padding: 12px 14px; }
+  .set-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
+  .set-field.model { grid-column: 1 / -1; }
 
   .messages { padding: 20px 12px 12px; gap: 18px; }
   .msg-body { max-width: 92%; }
