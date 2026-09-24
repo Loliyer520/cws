@@ -2,13 +2,15 @@
 // 布局与视觉语言移植自 kawork（纸墨风），功能对齐 cws 桥协议。
 import { useEffect, useState } from "react";
 import { store, useStore } from "./store";
-import { IconBridge, IconMenu, IconPlus } from "./icons";
+import { IconBridge } from "./icons";
 import Sidebar from "./components/Sidebar";
 import ChatHead from "./components/ChatHead";
 import ChatView from "./components/ChatView";
 import Composer from "./components/Composer";
 import Toasts from "./components/Toasts";
 import { BackendsPanel, ChannelsPanel, NewSessionPanel, RemarkPanel } from "./components/Panels";
+import KxPanel from "./components/KxPanel";
+import UpdatePanel from "./components/UpdatePanel";
 
 function Splash({ out }: { out: boolean }) {
   return (
@@ -70,18 +72,7 @@ function Main() {
         <Sidebar onNavigate={() => setDrawer(false)} />
       </div>
       <div className="main-col">
-        <div className="topbar">
-          <button className="hamburger" onClick={toggleNav}><IconMenu size={17} /></button>
-          <div className="brand">
-            <span className="brand-mark"><IconBridge size={17} /></span>
-            cws
-            <span className={"dot" + (st.connected ? " on" : "")} title={st.connected ? "已连接" : "重连中…"} />
-          </div>
-          <div className="actions">
-            <button className="ghost" onClick={() => store.setModal("new")}><IconPlus size={14} /> 新建</button>
-          </div>
-        </div>
-        {st.current ? <ChatHead /> : null}
+        <ChatHead onNav={toggleNav} />
         {st.current ? <ChatView /> : (
           <div className="scroll">
             <div className="empty">
@@ -117,6 +108,8 @@ export default function App() {
       {st.modal === "new" && <NewSessionPanel />}
       {st.modal === "channels" && <ChannelsPanel />}
       {st.modal === "backends" && <BackendsPanel />}
+      {st.modal === "kx" && <KxPanel />}
+      {st.modal === "update" && <UpdatePanel />}
       {(() => {
         const m = st.modal;
         return m !== null && typeof m === "object" && m.kind === "remark" ? <RemarkPanel sid={m.sid} /> : null;

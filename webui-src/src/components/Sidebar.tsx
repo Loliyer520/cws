@@ -1,7 +1,7 @@
 // Sidebar.tsx —— 会话列表 + 面板入口（kawork 布局：新建按钮 / 滚动列表 / 底部入口）
 import { BACKEND_LETTER, store, useStore } from "../store";
 import type { SessionState } from "../types";
-import { IconGear, IconNote, IconStack, IconTrash } from "../icons";
+import { IconGear, IconNote, IconStack, IconSync, IconTrash, IconWatch } from "../icons";
 
 function sortedSessions(map: Map<string, SessionState>): SessionState[] {
   return Array.from(map.values()).sort((a, b) =>
@@ -71,6 +71,13 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
         <button onClick={() => { store.send("channels.list"); store.setModal("channels"); }}>
           <IconGear size={15} /> 上游渠道与模型
+        </button>
+        <button onClick={() => store.setModal("kx")}>
+          <IconWatch size={15} /> 卡西 · 手表助手
+        </button>
+        <button onClick={() => { store.checkUpdate(); store.setModal("update"); }}>
+          <IconSync size={15} /> 系统更新
+          {st.update.behind > 0 ? <span className="side-dot" title={"落后 " + st.update.behind + " 个提交"} /> : null}
         </button>
       </div>
     </div>

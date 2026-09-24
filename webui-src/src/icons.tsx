@@ -129,3 +129,22 @@ export const IconStack = ({ size = 16, className }: P) =>
       <path d="M7 7h.01M7 17h.01" />
     </>
   ));
+
+/** 环形箭头：检查更新 / 系统更新 */
+export const IconSync = ({ size = 16, className }: P) =>
+  base(size, className, (
+    <>
+      <path d="M21 12a9 9 0 1 1-2.6-6.3" />
+      <path d="M21 3v6h-6" />
+    </>
+  ));
+
+/** 手表：卡西（手表助手） */
+export const IconWatch = ({ size = 16, className }: P) =>
+  base(size, className, (
+    <>
+      <circle cx="12" cy="12" r="5.5" />
+      <path d="M12 9.5V12l1.8 1.8" />
+      <path d="M9.5 6.6 9 3h6l-.5 3.6M9.5 17.4 9 21h6l-.5-3.6" />
+    </>
+  ));

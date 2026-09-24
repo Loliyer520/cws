@@ -129,7 +129,23 @@ export type ModalState =
   | "new"
   | "channels"
   | "backends"
+  | "kx"
+  | "update"
   | { kind: "remark"; sid: string };
+
+/** update_state 帧消化后的自更新状态 */
+export interface UpdateState {
+  checking: boolean;
+  applying: boolean;
+  branch: string;
+  current: string;
+  remote: string;
+  behind: number;
+  commits: string[];
+  dirty: string[];
+  error: string;
+  lastCheck: number; // 0 = 从未检查
+}
 
 export interface AppState {
   connected: boolean;
@@ -143,4 +159,5 @@ export interface AppState {
   backends: BackendsInfo | null;
   modal: ModalState;
   toasts: Toast[];
+  update: UpdateState;
 }

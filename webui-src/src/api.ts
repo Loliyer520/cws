@@ -62,6 +62,12 @@ export class Api {
     return "new:" + this.echo;
   }
 
+  /** 普通 echo（kx.chat 等一问一答动作的应答关联） */
+  rawEcho(): string {
+    this.echo += 1;
+    return "q" + this.echo;
+  }
+
   destroy() {
     this.stopped = true;
     if (this.timer) { clearTimeout(this.timer); this.timer = null; }

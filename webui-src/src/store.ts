@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 import { Api, type Frame } from "./api";
 import type {
   AppState, AskFrame, Backend, Channel, ImgAttachment, ModalState,
-  SessionInfo, SessionState, Toast,
+  SessionInfo, SessionState, Toast, UpdateState,
 } from "./types";
 
 export const PERM_OPTIONS: Record<Backend, [string, string][]> = {
@@ -31,6 +31,8 @@ function fmtK(n: number): string {
 const listeners = new Set<() => void>();
 
 class Store {
+  update: UpdateState = { checking: false, applying: false, branch: "", current: "", remote: "", behind: 0, commits: [], dirty: [], error: "", lastCheck: 0 };
+
   state: AppState = {
     connected: false,
     entered: false,
@@ -42,6 +44,7 @@ class Store {
     backends: null,
     modal: null,
     toasts: [],
+    update: this.update,
   };
 
   api: Api | null = null;
@@ -51,6 +54,10 @@ class Store {
   /** sid -> Set(mid)，本页面生命周期内去重 */
   private seen = new Map<string, Set<string>>();
   private pendingSid: string | null = null;
+  /** echo -> kx.chat 应答回调（一问一答，超时自兜底） */
+  private kxWaiters = new Map<string, (f: Frame) => void>();
+  /** 自更新巡检定时器（登录一次即可） */
+  private updTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor() {
     try { this.marks = JSON.parse(localStorage.getItem("cws_marks") || "{}"); } catch { this.marks = {}; }
@@ -154,6 +161,11 @@ class Store {
         this.openChat(this.pendingSid);
       }
       this.pendingSid = null;
+      // 自更新巡检：连接即查一次，此后每 30 分钟
+      if (!this.updTimer) {
+        this.send("update.check");
+        this.updTimer = setInterval(() => this.send("update.check"), 30 * 60 * 1000);
+      }
     } else if (!this.state.entered) {
       this.state.loginErr = "连接失败：Token 无效或服务不可达，将持续重试…";
     }
@@ -248,6 +260,35 @@ class Store {
 
   setRemark(sid: string, remark: string) {
     this.send("session.remark", { session_id: sid, remark });
+  }
+
+  // ---------- 自更新 ----------
+  checkUpdate() {
+    if (!this.api?.ready || this.state.update.checking) return;
+    this.state.update.checking = true;
+    this.touch();
+    this.send("update.check");
+  }
+
+  applyUpdate() {
+    if (!this.api?.ready || this.state.update.applying) return;
+    this.state.update.applying = true;
+    this.touch();
+    this.send("update.apply");
+  }
+
+  // ---------- 卡西（手表助手）代理 ----------
+  /** 一问一答调用 kx.chat；后端 fetch 上限 90s，前端 95s 兜底超时 */
+  kxCall(params: Frame): Promise<Frame> {
+    if (!this.api?.ready) return Promise.resolve({ ok: false, error: "未连接" });
+    return new Promise((resolve) => {
+      const echo = this.api!.rawEcho();
+      this.kxWaiters.set(echo, resolve);
+      this.send("kx.chat", { ...params, echo });
+      setTimeout(() => {
+        if (this.kxWaiters.delete(echo)) resolve({ ok: false, error: "超时（95s）" });
+      }, 95_000);
+    });
   }
 
   // ---------- 下行帧处理 ----------
@@ -380,6 +421,36 @@ class Store {
         if (s) s.info.remark = f.remark || "";
         this.toast("备注已保存", "ok");
         this.touch();
+        break;
+      }
+      case "update_state": {
+        const u = this.state.update;
+        const wasBehind = u.behind;
+        if (f.ok) {
+          Object.assign(u, {
+            branch: f.branch || "", current: f.current || "", remote: f.remote || "",
+            behind: f.behind || 0, commits: f.commits || [], dirty: f.dirty || [],
+            error: "", lastCheck: Date.now(),
+          });
+        } else {
+          u.error = f.error || "未知错误";
+          u.lastCheck = Date.now();
+        }
+        u.checking = false;
+        u.applying = false;
+        this.touch();
+        if (f.ok && f.phase === "check" && f.behind > 0 && wasBehind !== f.behind) {
+          this.toast(`发现更新：落后 ${f.behind} 个提交（侧栏 · 系统更新）`);
+        }
+        if (f.ok && f.phase === "apply") {
+          this.toast(f.behind ? "更新后仍落后 " + f.behind + " 个提交，请重试" : "已更新到 " + (f.current || "") + " · 前端刷新生效，后端重启生效", "ok");
+        }
+        break;
+      }
+      case "kx_reply": {
+        const w = this.kxWaiters.get(f.echo);
+        if (w) { this.kxWaiters.delete(f.echo); w(f); }
+        else if (!f.ok) this.toast("卡西请求失败：" + (f.error || ""), "err");
         break;
       }
       case "error": this.onError(f); break;

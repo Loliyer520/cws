@@ -2,6 +2,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
 import { BaseSession } from './base-session.js';
 import { ClaudeSession } from './claude-session.js';
 import { CodexSession } from './codex-session.js';
@@ -13,7 +14,7 @@ import {
   CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
 } from './config.js';
-import { log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
+import { BASE, log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
 
 /** Session factory: backend from explicit param → sess.json → config default. */
 export function makeSession(bridge, sid, ws, opts = {}) {
@@ -64,6 +65,7 @@ export class Bridge {
     this.queue = []; // [{sid, ws, echo, ts, permissionMode, channel, model, backend}]
     this.conns = new Set();
     this.gateLock = Promise.resolve();
+    this._updating = false; // update.apply 互斥
     this.last_turn_start = 0.0;
     this.maxActive = MAX_ACTIVE;
     this.maxQueue = QUEUE_MAX;
@@ -283,6 +285,12 @@ export class Bridge {
         break;
       case 'kx.chat':
         await this.kxChat(ws, params, echo);
+        break;
+      case 'update.check':
+        await this.updateCheck(ws, echo);
+        break;
+      case 'update.apply':
+        await this.updateApply(ws, echo);
         break;
       case 'new_session':
         await this.newSession(ws, params, echo);
@@ -1094,6 +1102,72 @@ export class Bridge {
       log('kx_chat', { channel: ch.name, model, tools: toolCalls.length, chars: content.length });
     } catch (e) {
       await fail(String((e && e.message) || e).slice(0, 200));
+    }
+  }
+
+  // ---------- GitHub 自更新 ----------
+  // webui 产物直接进库（webui/assets 哈希名），pull 后刷新页面即生效；
+  // src/ 后端代码要重启进程才生效——apply 只动文件，绝不停自己的服务。
+  _git(args, timeoutMs = 30000) {
+    return new Promise((resolve) => {
+      execFile('git', args, { cwd: BASE, timeout: timeoutMs, encoding: 'utf8' }, (err, stdout, stderr) => {
+        resolve({ ok: !err, out: String(stdout || '').trim(), err: String((err && err.message) || stderr || '').trim() });
+      });
+    });
+  }
+
+  /** fetch 之后的公共探测：分支、两端短 sha、落后提交清单、工作区脏文件 */
+  async _updateProbe(ws, echo, phase) {
+    const cur = await this._git(['rev-parse', 'HEAD']);
+    if (!cur.ok) {
+      await this._wsSend(ws, { post_type: 'update_state', ok: false, phase, error: '不是 git 检出：' + cur.err.slice(0, 160), echo });
+      return;
+    }
+    const up = await this._git(['rev-parse', '@{u}']);
+    if (!up.ok) {
+      await this._wsSend(ws, { post_type: 'update_state', ok: false, phase, error: '没有上游分支（git branch --set-upstream-to=origin/main）', echo });
+      return;
+    }
+    const behind = cur.out === up.out ? 0 : Number((await this._git(['rev-list', '--count', 'HEAD..@{u}'])).out) || 0;
+    const commits = behind
+      ? (await this._git(['log', '--oneline', '-n', '50', 'HEAD..@{u}'])).out.split('\n').filter(Boolean)
+      : [];
+    const dirty = (await this._git(['status', '--porcelain'])).out.split('\n').filter(Boolean);
+    const branch = (await this._git(['rev-parse', '--abbrev-ref', 'HEAD'])).out;
+    await this._wsSend(ws, {
+      post_type: 'update_state', ok: true, phase, branch,
+      current: cur.out.slice(0, 7), remote: up.out.slice(0, 7),
+      behind, commits, dirty, echo,
+    });
+  }
+
+  async updateCheck(ws, echo) {
+    const f = await this._git(['fetch', 'origin'], 45000);
+    if (!f.ok) {
+      await this._wsSend(ws, { post_type: 'update_state', ok: false, phase: 'check', error: 'git fetch 失败：' + f.err.slice(0, 200), echo });
+      return;
+    }
+    await this._updateProbe(ws, echo, 'check');
+  }
+
+  async updateApply(ws, echo) {
+    if (this._updating) {
+      await this._wsSend(ws, { post_type: 'update_state', ok: false, phase: 'apply', error: '已有更新在进行中', echo });
+      return;
+    }
+    this._updating = true;
+    try {
+      // --autostash：channels.json 是运行态常脏的跟踪文件，藏起再弹回；
+      // --ff-only 拒绝任何会丢历史的合并，失败原样报给前端
+      const m = await this._git(['pull', '--ff-only', '--autostash'], 180000);
+      if (!m.ok) {
+        await this._wsSend(ws, { post_type: 'update_state', ok: false, phase: 'apply', error: 'git pull 失败：' + m.err.slice(0, 300), echo });
+        return;
+      }
+      log('update_applied', {});
+      await this._updateProbe(ws, echo, 'apply');
+    } finally {
+      this._updating = false;
     }
   }
 

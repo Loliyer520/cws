@@ -5,7 +5,7 @@ import { PERM_OPTIONS, store, useStore } from "../store";
 import type { Backend, Channel } from "../types";
 import { IconX } from "../icons";
 
-function Shell({ title, onClose, children, wide }: {
+export function Shell({ title, onClose, children, wide }: {
   title: string; onClose: () => void; children: React.ReactNode; wide?: boolean;
 }) {
   return (
