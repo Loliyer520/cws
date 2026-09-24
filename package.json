@@ -7,7 +7,8 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node wsclient.mjs"
+    "test": "node wsclient.mjs",
+    "build:webui": "npm --prefix webui-src install --no-fund --no-audit && npm --prefix webui-src run build"
   },
   "engines": {
     "node": ">=18"
