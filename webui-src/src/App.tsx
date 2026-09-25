@@ -9,7 +9,7 @@ import ChatView from "./components/ChatView";
 import Composer from "./components/Composer";
 import Toasts from "./components/Toasts";
 import { BackendsPanel, ChannelsPanel, NewSessionPanel, RemarkPanel } from "./components/Panels";
-import KxPanel from "./components/KxPanel";
+import KxView from "./components/KxView";
 import UpdatePanel from "./components/UpdatePanel";
 
 function Splash({ out }: { out: boolean }) {
@@ -73,7 +73,14 @@ function Main() {
       </div>
       <div className="main-col">
         <ChatHead onNav={toggleNav} />
-        {st.current ? <ChatView /> : (
+        {st.view === "kx" ? (
+          <KxView />
+        ) : st.current ? (
+          <>
+            <ChatView />
+            <Composer />
+          </>
+        ) : (
           <div className="scroll">
             <div className="empty">
               <div className="empty-kicker">CWS CONSOLE</div>
@@ -83,7 +90,6 @@ function Main() {
             </div>
           </div>
         )}
-        {st.current ? <Composer /> : null}
       </div>
     </div>
   );
@@ -108,7 +114,6 @@ export default function App() {
       {st.modal === "new" && <NewSessionPanel />}
       {st.modal === "channels" && <ChannelsPanel />}
       {st.modal === "backends" && <BackendsPanel />}
-      {st.modal === "kx" && <KxPanel />}
       {st.modal === "update" && <UpdatePanel />}
       {(() => {
         const m = st.modal;

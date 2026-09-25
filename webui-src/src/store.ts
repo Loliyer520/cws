@@ -37,6 +37,7 @@ class Store {
     connected: false,
     entered: false,
     loginErr: "",
+    view: "chat",
     sessions: new Map(),
     current: null,
     channels: [],
@@ -45,6 +46,7 @@ class Store {
     modal: null,
     toasts: [],
     update: this.update,
+    kxSteps: [],
   };
 
   api: Api | null = null;
@@ -126,6 +128,13 @@ class Store {
 
   setModal(m: ModalState) { this.state.modal = m; this.touch(); }
 
+  /** 主区视图切换：卡西管理台 ↔ 会话聊天（进会话自动回聊天） */
+  setView(v: "chat" | "kx") {
+    if (this.state.view === v) return;
+    this.state.view = v;
+    this.touch();
+  }
+
   // ---------- 连接生命周期 ----------
   boot() {
     const qp = new URLSearchParams(location.search);
@@ -174,7 +183,8 @@ class Store {
 
   // ---------- 会话动作 ----------
   openChat(sid: string) {
-    if (this.state.current === sid) return;
+    this.state.view = "chat";
+    if (this.state.current === sid) { this.touch(); return; }
     this.state.current = sid;
     const s = this.sess(sid);
     this.touch();
@@ -198,7 +208,8 @@ class Store {
       echo,
     });
     // 指定 sid 的创建直接进入（session_ready 会带着 new:echo 再确认一次）
-    if (sid) { this.state.current = sid; this.touch(); }
+    if (sid) { this.state.current = sid; }
+    this.state.view = "chat";
     this.state.modal = null;
     this.touch();
   }
@@ -277,17 +288,20 @@ class Store {
     this.send("update.apply");
   }
 
-  // ---------- 卡西（手表助手）代理 ----------
-  /** 一问一答调用 kx.chat；后端 fetch 上限 90s，前端 95s 兜底超时 */
-  kxCall(params: Frame): Promise<Frame> {
+  // ---------- 卡西（桥管理助手）代理 ----------
+  /** 一问一答调用 kx.chat；透传 95s 兜底，agent 形态（服务端自跑循环）放宽到 timeoutMs */
+  kxCall(params: Frame, timeoutMs = 95_000): Promise<Frame> {
     if (!this.api?.ready) return Promise.resolve({ ok: false, error: "未连接" });
     return new Promise((resolve) => {
       const echo = this.api!.rawEcho();
       this.kxWaiters.set(echo, resolve);
       this.send("kx.chat", { ...params, echo });
       setTimeout(() => {
-        if (this.kxWaiters.delete(echo)) resolve({ ok: false, error: "超时（95s）" });
-      }, 95_000);
+        if (this.kxWaiters.delete(echo)) {
+          this.state.kxSteps = [];
+          resolve({ ok: false, error: "超时（" + Math.round(timeoutMs / 1000) + "s）" });
+        }
+      }, timeoutMs);
     });
   }
 
@@ -447,10 +461,20 @@ class Store {
         }
         break;
       }
+      case "kx_step": {
+        // 代理循环实时步骤：只上屏，不落对话历史（kx_reply.steps 会带回完整清单）
+        this.state.kxSteps = [...this.state.kxSteps, { name: f.name || "", ok: !!f.ok, brief: f.brief || "" }];
+        this.touch();
+        break;
+      }
       case "kx_reply": {
         const w = this.kxWaiters.get(f.echo);
-        if (w) { this.kxWaiters.delete(f.echo); w(f); }
-        else if (!f.ok) this.toast("卡西请求失败：" + (f.error || ""), "err");
+        if (w) {
+          this.kxWaiters.delete(f.echo);
+          this.state.kxSteps = [];
+          this.touch();
+          w(f);
+        } else if (!f.ok) this.toast("卡西请求失败：" + (f.error || ""), "err");
         break;
       }
       case "error": this.onError(f); break;

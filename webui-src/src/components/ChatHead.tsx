@@ -1,17 +1,19 @@
-// ChatHead.tsx —— 单排顶栏：汉堡 / 品牌 / 会话标题 / 停止·齿轮·删除 / 新建。
-// 权限/渠道/模型收进齿轮展开的设置卡片（卡内首行是后端元信息）。
+// ChatHead.tsx —— 单排顶栏：汉堡 / 品牌 / 标题 / 停止·齿轮·删除 / 新建。
+// 卡西管理台视图时标题固定为"卡西"；会话视图同旧（设置卡收在齿轮里）。
 import { useEffect, useState } from "react";
 import { PERM_OPTIONS, store, useStore } from "../store";
-import { IconBridge, IconGear, IconMenu, IconPlus, IconStop, IconTrash } from "../icons";
+import { IconBridge, IconGear, IconMenu, IconPlus, IconStop, IconTrash, IconWatch } from "../icons";
 
 export default function ChatHead({ onNav }: { onNav: () => void }) {
   const st = useStore();
+  const inKx = st.view === "kx";
   const s = st.current ? st.sessions.get(st.current) : null;
   const info = s?.info;
   const [model, setModel] = useState("");
   const [setOpen, setSetOpen] = useState(false);
 
   useEffect(() => { setModel(info?.model || ""); }, [st.current, info?.model]);
+  useEffect(() => { if (inKx) setSetOpen(false); }, [inKx]);
 
   const meta = info
     ? info.backend + (info.channel ? " · " + info.channel : "") + (info.model ? " / " + info.model : "")
@@ -24,10 +26,15 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
         <button className="hamburger" onClick={onNav}><IconMenu size={17} /></button>
         <div className="brand">
           <span className="brand-mark"><IconBridge size={17} /></span>
-          {!info && <span className="brand-word">cws</span>}
+          {!info && !inKx && <span className="brand-word">cws</span>}
           <span className={"dot" + (st.connected ? " on" : "")} title={st.connected ? "已连接" : "重连中…"} />
         </div>
-        {info ? (
+        {inKx ? (
+          <div className="tb-title" title="卡西 · 桥的自动管理助手">
+            <span className="ch-remark kx">卡西</span>
+            <span className="tb-text">桥管理助手 · 会话 / 渠道 / 更新</span>
+          </div>
+        ) : info ? (
           <>
             <div className="tb-title" title={meta || undefined}>
               {info.remark ? <span className="ch-remark">{"#" + info.remark}</span> : null}
@@ -61,10 +68,13 @@ export default function ChatHead({ onNav }: { onNav: () => void }) {
           </>
         ) : null}
         <div className="actions">
+          {inKx ? (
+            <button className="ghost" title="返回会话聊天" onClick={() => store.setView("chat")}><IconWatch size={14} /> 回会话</button>
+          ) : null}
           <button className="ghost" onClick={() => store.setModal("new")}><IconPlus size={14} /> 新建</button>
         </div>
       </div>
-      {setOpen && s && info ? (
+      {setOpen && s && info && !inKx ? (
         <div className="session-set">
           <div className="ch-meta set-meta">{meta}</div>
           <div className="set-grid">

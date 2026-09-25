@@ -15,6 +15,17 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <div className="sidebar">
       <div className="side-pad">
+        <button
+          className={"kx-pin" + (st.view === "kx" ? " active" : "")}
+          onClick={() => { store.setView("kx"); onNavigate?.(); }}
+          title="卡西 · 桥的自动管理助手"
+        >
+          <span className="kx-pin-ico"><IconWatch size={16} /></span>
+          <span className="kx-pin-text">
+            <span className="kx-pin-title">卡西</span>
+            <span className="kx-pin-sub">桥管理助手 · 自动运维</span>
+          </span>
+        </button>
         <button className="new-btn full" onClick={() => store.setModal("new")}>＋ 新建会话</button>
       </div>
 
@@ -71,9 +82,6 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         </button>
         <button onClick={() => { store.send("channels.list"); store.setModal("channels"); }}>
           <IconGear size={15} /> 上游渠道与模型
-        </button>
-        <button onClick={() => store.setModal("kx")}>
-          <IconWatch size={15} /> 卡西 · 手表助手
         </button>
         <button onClick={() => { store.checkUpdate(); store.setModal("update"); }}>
           <IconSync size={15} /> 系统更新

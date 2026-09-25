@@ -129,7 +129,6 @@ export type ModalState =
   | "new"
   | "channels"
   | "backends"
-  | "kx"
   | "update"
   | { kind: "remark"; sid: string };
 
@@ -147,11 +146,20 @@ export interface UpdateState {
   lastCheck: number; // 0 = 从未检查
 }
 
+/** 卡西代理循环的一步（kx_step / kx_reply.steps） */
+export interface KxStep {
+  name: string;
+  ok: boolean;
+  brief: string;
+}
+
 export interface AppState {
   connected: boolean;
   /** 首次成功连接后置 true，此后断线仍停留在主界面（重连中） */
   entered: boolean;
   loginErr: string;
+  /** 主区视图：会话聊天 / 卡西管理台 */
+  view: "chat" | "kx";
   sessions: Map<string, SessionState>;
   current: string | null;
   channels: Channel[];
@@ -160,4 +168,6 @@ export interface AppState {
   modal: ModalState;
   toasts: Toast[];
   update: UpdateState;
+  /** 卡西代理循环的实时步骤（kx_step 推送，kx_reply 清空） */
+  kxSteps: KxStep[];
 }
