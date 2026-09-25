@@ -287,7 +287,7 @@ body {
 
 .messages {
   max-width: 720px; margin: 0 auto;
-  display: flex; flex-direction: column; gap: 24px;
+  display: flex; flex-direction: column; gap: 18px;
 }
 
 .msg { display: flex; gap: 12px; animation: msgIn .45s cubic-bezier(.16,1,.3,1) both; }
@@ -313,7 +313,6 @@ body {
   flex-shrink: 0;
   margin-top: 2px;
 }
-.msg.assistant .avatar.tool-ava { background: var(--tint-strong); color: var(--ink-soft); }
 .msg.assistant .avatar.ask-ava { background: var(--rose-tint); color: var(--rose); }
 .msg.assistant .bubble { padding-top: 3px; min-width: 0; }
 .bubble.md { white-space: normal; }
@@ -456,6 +455,60 @@ body {
 }
 
 .tool-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+/* ---------- 单行工具行 / 轮次折叠 ---------- */
+.tool-group {
+  margin-left: 40px; /* 与助手气泡文本对齐（avatar 28 + gap 12） */
+  display: flex; flex-direction: column; gap: 2px;
+  min-width: 0;
+}
+.tool-line {
+  display: flex; align-items: center; gap: 8px;
+  min-width: 0;
+  padding: 2px 10px 2px 9px;
+  border-left: 2px solid var(--line);
+  font-size: 12px; line-height: 1.7;
+  color: var(--ink-faint);
+  animation: msgIn .3s ease both;
+}
+.tool-line .t-ico { flex-shrink: 0; display: grid; place-items: center; color: var(--ink-faint); }
+.tool-line .t-name {
+  flex-shrink: 0;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11.5px; font-weight: 600;
+  color: var(--ink-soft);
+}
+.tool-line .t-brief {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-family: ui-monospace, "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+}
+.tool-line.running { border-left-color: var(--warn); color: var(--ink-soft); }
+.tool-line.running .t-name { color: var(--ink); }
+.tool-line.running .t-ico { color: var(--warn); }
+.tool-line .t-run {
+  flex-shrink: 0;
+  width: 6px; height: 6px; border-radius: 50%;
+  background: var(--warn);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+.fold {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 2px 0; margin: -4px 0;
+  border: none; background: none;
+  font-family: inherit; font-size: 11.5px; letter-spacing: .02em;
+  color: var(--ink-faint); cursor: pointer;
+  animation: msgIn .4s ease both;
+  transition: color .2s;
+}
+.fold::before, .fold::after { content: ""; flex: 1; height: 1px; background: var(--line); transition: background .2s; }
+.fold:hover { color: var(--ink); }
+.fold:hover::before, .fold:hover::after { background: var(--ink-faint); }
+.fold .fold-label { white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+.fold svg { flex-shrink: 0; transition: transform .25s cubic-bezier(.16, 1, .3, 1); }
+.fold.open svg { transform: rotate(90deg); }
 .tool-allow, .tool-deny {
   font-family: inherit; font-size: 12px;
   border-radius: 999px; padding: 5px 16px;
@@ -783,10 +836,11 @@ body {
   .set-grid { grid-template-columns: 1fr 1fr; gap: 12px; }
   .set-field.model { grid-column: 1 / -1; }
 
-  .messages { padding: 20px 12px 12px; gap: 18px; }
+  .messages { padding: 20px 12px 12px; gap: 14px; }
   .msg-body { max-width: 92%; }
   .bubble { padding: 10px 14px; font-size: 14.5px; }
   .msg.assistant .bubble { padding: 0; }
+  .tool-group { margin-left: 0; } /* 窄屏不留头像位，整行利用 */
 
   .composer-wrap { padding: 10px 10px calc(22px + env(safe-area-inset-bottom)); }
   .composer { padding: 6px 6px 6px 18px; min-height: 52px; }

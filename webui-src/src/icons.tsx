@@ -34,6 +34,10 @@ export const IconTerminal = ({ size = 16, className }: P) =>
     </>
   ));
 
+/** 右尖角：折叠分割线指示 */
+export const IconChevron = ({ size = 16, className }: P) =>
+  base(size, className, <path d="m9 6 6 6-6 6" />);
+
 /** 文档：读文件 */
 export const IconFile = ({ size = 16, className }: P) =>
   base(size, className, (
