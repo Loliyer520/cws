@@ -756,7 +756,8 @@ export class Bridge {
     return out;
   }
 
-  /** 渠道清单（密钥只给尾 4 位） */
+  /** 渠道清单（完整密钥随行下发：token 门内的私有系统，手表端要复制；卡西的
+   * channels_list 按字段挑选不含它，密钥不会经卡西进聊天记录） */
   channelsSnapshot() {
     const chans = [];
     for (const ch of API_CHANNELS) {
@@ -768,6 +769,7 @@ export class Bridge {
         wire_api: ch.wire_api || 'responses', http_headers: ch.http_headers || {},
         model: ch.model || '', models: ch.models || [],
         key_tail: key.slice(-4),
+        api_key: key,
         default: ch.name === channelState.defaultChannel,
       });
     }
