@@ -69,6 +69,9 @@ export const TURN_TIMEOUT = Number(cfg.turn_timeout ?? 300);
 export const ASK_TIMEOUT = Number(cfg.ask_timeout ?? 120);
 export const MIN_TURN_INTERVAL = Number(cfg.min_turn_interval ?? 2);
 export const IDLE_TIMEOUT = Number(cfg.idle_timeout_s ?? 1800);
+// WS 断开（app 切后台）是否立刻回收会话进程：默认否——进程留到 idle_timeout 统一 reap，
+// 否则会话里挂的后台任务（等待器等）随进程组一起死，用户体验是"老被截断"
+export const REAP_ON_DETACH = cfg.reap_on_detach === true;
 // Workspace 磁盘保留期（秒）：注册表外的目录超过该时长才会被 sweep 删除；<=0 关闭清扫
 export const WS_RETENTION_S = Number(cfg.ws_retention_s ?? 7 * 86400);
 export const ALLOWED_TOOLS = cfg.allowed_tools || 'Read,Grep,Glob,AskUserQuestion';

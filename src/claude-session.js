@@ -8,7 +8,7 @@ import readline from 'node:readline';
 import crypto from 'node:crypto';
 import { BaseSession } from './base-session.js';
 import {
-  CLAUDE_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, channelByName,
+  CLAUDE_BIN, ALLOWED_TOOLS, PERMISSION_MODE, ASK_TIMEOUT, REAP_ON_DETACH, channelByName,
 } from './config.js';
 import {
   log, briefOf, spawnDetached, killProcGroup, killProcGroupForce, waitProc, procAlive,
@@ -324,7 +324,7 @@ export class ClaudeSession extends BaseSession {
       subtype: obj.subtype,
       echo: this.turn_echo,
     });
-    if (this.detached) this._killpg();
+    if (REAP_ON_DETACH && this.detached) this._killpg();
     log('turn_end', {
       session_id: this.id, dur_ms: obj.duration_ms,
       out_tokens: usage.output_tokens, is_error: obj.is_error,

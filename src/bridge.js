@@ -9,7 +9,7 @@ import { CodexSession } from './codex-session.js';
 import { OpenclawSession, OPENCLAW_PERMISSIONS } from './openclaw-session.js';
 import {
   TOKEN, ONE_TIME_TOKENS, WORKSPACES, MAX_ACTIVE, QUEUE_MAX, MIN_TURN_INTERVAL,
-  IDLE_TIMEOUT, WS_RETENTION_S, API_CHANNELS, channelState, setDefaultChannel, channelByName,
+  IDLE_TIMEOUT, WS_RETENTION_S, REAP_ON_DETACH, API_CHANNELS, channelState, setDefaultChannel, channelByName,
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
   CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
@@ -222,7 +222,7 @@ export class Bridge {
       if (s.ws === ws && !s.closed) {
         s.detached = true;
         s.ws = null;
-        if (!s.turn_active && procAlive(s.proc)) {
+        if (REAP_ON_DETACH && !s.turn_active && procAlive(s.proc)) {
           if (s._killpg) s._killpg();
         }
       }
