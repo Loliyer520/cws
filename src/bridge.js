@@ -106,25 +106,90 @@ export class Bridge {
     // 可拆卸插件：action 名 → {fn, cfg}。装载只认 config.plugins 条目 + src/plugins/<name>.js，
     // 桥自身不认识任何具体插件——增删替换都只改配置和插件文件，不动这里
     this.pluginCmds = new Map();
+    // 插件契约 v2：WS/HTTP 路径注册表（server.js 分发）+ 插件 shutdown 清单
+    this.upgradeHandlers = new Map(); // 路径前缀 → (req, socket, head)，插件自理鉴权
+    this.httpHandlers = [];           // 路径前缀 → (req, res)，先于静态服务命中
+    this.pluginShutdowns = [];        // 插件 shutdown()，桥关停时逆序调用
+    this.kaxiPluginTools = new Map(); // 插件贡献给卡西的工具：name → {def, fn}——
+    //  卡西（app/手表端 kx.chat 与 QQ 端 L5 共用）的工具表 = KX_TOOLS ∪ 本表
     this._loadPlugins().catch((e) => log('plugin_load_err', { err: String(e) }));
   }
 
-  /** 动态装载启用的插件：src/plugins/<name>.js 导出 commands = {action: async (ctx, params, echo) => {}}。
-   *  ctx = { bridge, ws, cfg（config+secrets 合并后的插件配置）, reply(frame) } */
+  /** 动态装载启用的插件（契约 v2）：src/plugins/<name>/index.js 优先（目录形态，
+   *  多文件插件），404 再回落 <name>.js 单文件。插件导出：
+   *    commands = {action: async (ctx, params, echo) => {}}   WS 管理动作
+   *    init(ctx)    装载后调用一次（挂端点/起定时器；抛错则本插件不生效）
+   *    shutdown()   桥关停时逆序调用
+   *  命令级 ctx = { bridge, ws, cfg（config+secrets 合并后的插件配置）, reply(frame) }
+   *  插件级 ctx 见 _pluginCtx。桥仍然不认识任何具体插件——注册表/LLM/卡西
+   *  都是通用能力，插件自己组装。 */
   async _loadPlugins() {
     for (const [name, pc] of Object.entries(PLUGINS)) {
       if (pc.enabled === false) continue;
+      const registered = [];
       try {
-        const mod = await import(`./plugins/${name}.js`);
-        const cmds = mod.commands || {};
-        for (const [action, fn] of Object.entries(cmds)) {
+        // 形态判定用文件存在性而不是捕获 import 错误——插件自身依赖缺失也抛
+        // ERR_MODULE_NOT_FOUND，按错误猜路径会把真实错误盖成误导性的「找不到文件」
+        const dirForm = fs.existsSync(path.join(BASE, 'src', 'plugins', name, 'index.js'));
+        const mod = await import(dirForm ? `./plugins/${name}/index.js` : `./plugins/${name}.js`);
+        // init 先于命令注册，失败则本插件完全不生效（注册的端点一并回滚）
+        if (mod.init) {
+          await mod.init(this._pluginCtx(name, pc, registered));
+        }
+        for (const [action, fn] of Object.entries(mod.commands || {})) {
           if (this.pluginCmds.has(action)) { log('plugin_cmd_conflict', { plugin: name, action }); continue; }
           this.pluginCmds.set(action, { fn, cfg: pc });
         }
-        log('plugin_loaded', { plugin: name, commands: Object.keys(cmds) });
+        if (mod.shutdown) this.pluginShutdowns.push(mod.shutdown);
+        log('plugin_loaded', { plugin: name, commands: Object.keys(mod.commands || {}) });
       } catch (e) {
+        this._rollbackPluginRegistrations(registered);
         log('plugin_load_err', { plugin: name, err: String(e) });
       }
+    }
+  }
+
+  /** 插件级一次性上下文（init 用，与命令级 ctx 区分）。track 用于 init 失败回滚。 */
+  _pluginCtx(name, pc, track = null) {
+    return {
+      bridge: this,
+      name,
+      cfg: pc,
+      log,
+      registerUpgrade: (prefix, handler) => {
+        const k = String(prefix);
+        this.upgradeHandlers.set(k, handler);
+        if (track) track.push(['u', k]);
+      },
+      registerHttp: (prefix, handler) => {
+        const entry = [String(prefix), handler];
+        this.httpHandlers.push(entry);
+        if (track) track.push(['h', entry]);
+      },
+      // 给卡西注入工具：def = openai 风格工具定义（name/description/parameters），
+      // fn = async (toolName, args) => 结果对象（{ok, brief, …}，与 kxExec 同约定）。
+      // 与内置工具重名时拒绝注册（内置优先，同 action 路由原则）。
+      registerKaxiTool: (def, fn) => {
+        if (!def || !def.name || typeof fn !== 'function') return false;
+        if (this.kaxiPluginTools.has(def.name)) return false;
+        this.kaxiPluginTools.set(def.name, { def, fn });
+        if (track) track.push(['t', def.name]);
+        return true;
+      },
+      callLLM: (channel, model, messages, tools, opts) => this.callLLM(channel, model, messages, tools, opts),
+      kxTurn: (opts) => this.kxTurn(opts),
+      kaxiSystemPrompt: (extra) => KX_SYSTEM_PROMPT + (extra ? '\n\n' + extra : ''),
+      kaxiTools: KX_TOOLS,
+      kaxiExec: (toolName, args) => this.kxExec(null, toolName, args),
+    };
+  }
+
+  /** init 失败后的端点回滚（_loadPlugins 用）。 */
+  _rollbackPluginRegistrations(track) {
+    for (const [kind, ref] of track || []) {
+      if (kind === 'u') this.upgradeHandlers.delete(ref);
+      else if (kind === 't') this.kaxiPluginTools.delete(ref);
+      else this.httpHandlers = this.httpHandlers.filter((e) => e !== ref);
     }
   }
 
@@ -159,7 +224,9 @@ export class Bridge {
     while (this.queue.length && this.activeCount() < this.maxActive) {
       const item = this.queue.shift();
       const { sid, ws, echo } = item;
-      if (ws.readyState !== ws.OPEN || this.sessions.has(sid)) continue;
+      // ws 可能为 null（插件 kaxiExec 建的会话无客户端连接）——不能读 readyState；
+      // 这类会话直接建 lazy 形态启动，输出等客户端接管时 replay
+      if ((ws && ws.readyState !== ws.OPEN) || this.sessions.has(sid)) continue;
       const s = makeSession(this, sid, ws, {
         permissionMode: item.permissionMode, channel: item.channel,
         model: item.model, backend: item.backend,
@@ -306,9 +373,13 @@ export class Bridge {
     }
   }
 
-  shutdown() {
+  async shutdown() {
     clearInterval(this.reaperTimer);
     clearInterval(this.sweepTimer);
+    // 插件先收（停端点/落盘），会话进程随后统一收
+    for (const fn of this.pluginShutdowns.reverse()) {
+      try { await fn(); } catch (e) { log('plugin_shutdown_err', { err: String(e) }); }
+    }
     const jobs = [];
     for (const s of this.sessions.values()) jobs.push(s.close('bridge_shutdown', false));
     return Promise.all(jobs);
@@ -505,7 +576,9 @@ export class Bridge {
       });
       return;
     }
-    s.ws = ws;
+    // 内部调用方（插件 kaxiExec）ws=null：绝不用空连接覆盖活绑定——否则该会话
+    // 后续的流式输出/审批请求全部发进虚空，客户端静默失联
+    if (ws) s.ws = ws;
     // global permission switch from the sending client
     const hint = params.permission_mode;
     if (hint && hint !== s.permission_mode) {
@@ -546,8 +619,8 @@ export class Bridge {
     const existing = this.sessions.get(sid);
     if (existing && !existing.closed) {
       // same-name reconnect = takeover: rebind ws, resync identity, never restart
-      existing.ws = ws;
-      existing.detached = false;
+      // ws=null（插件内部调用）不解绑现有连接，理由同 onSend
+      if (ws) { existing.ws = ws; existing.detached = false; }
       const procAliveNow = procAlive(existing.proc);
       let changed = false;
       if (channel && channel.name !== (existing.channel || {}).name) {
@@ -1104,155 +1177,223 @@ export class Bridge {
     log('kx_chat', { channel: ch.name, model, tools: r.tool_calls.length, chars: r.content.length });
   }
 
-  /** 上游单次调用：openai 协议直发；anthropic 协议转块结构（思考开+限预算）。 */
-  async _kxCallLLM(ch, model, messages, tools, maxTokens) {
+  /** 上游单次调用：openai 协议直发；anthropic 协议转块结构（思考开+限预算）。
+   *  opts.thinkingDisabled：显式关思考（deepseek/glm 类推理渠道思考块吃光
+   *  max_tokens 返回空壳——openai 端点补 thinking:{type:'disabled'}（两家中转
+   *  都认 anthropic 风格该参数），anthropic 端点直接不发 thinking 块）；
+   *  opts.timeoutMs 缺省 180s（中转挂连接不死不回的事故教训）。
+   *  空壳（HTTP 200 但无正文无工具）重试 ≤3 次并附催答；HTTP 非 200 / 超时
+   *  不重试原样失败（余额类 403/402 重试无意义）。 */
+  async _kxCallLLM(ch, model, messages, tools, maxTokens, opts = {}) {
     const base = ch.base_url.replace(/\/+$/, '');
-    try {
-      let content = '';
-      let think = '';
-      const toolCalls = [];
-      if (ch.protocol === 'openai') {
-        const body = { model, max_tokens: maxTokens, messages };
-        if (tools.length) {
-          body.tools = tools.map((t) => ({
-            type: 'function',
-            function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } },
-          }));
-          body.tool_choice = 'auto';
-        }
-        const resp = await fetch(this._apiPath(base, '/chat/completions'), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + ch.api_key },
-          body: JSON.stringify(body), signal: AbortSignal.timeout(90000),
-        });
-        const text = await resp.text();
-        if (resp.status !== 200) return { ok: false, error: 'HTTP ' + resp.status + ': ' + text.slice(0, 200) };
-        const data = JSON.parse(text);
-        const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
-        content = typeof msg.content === 'string' ? msg.content : '';
-        for (const tc of msg.tool_calls || []) {
-          let args = {};
-          try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch { /* 上游参数非 JSON 时按空对象 */ }
-          toolCalls.push({ id: tc.id, name: tc.function && tc.function.name, arguments: args });
-        }
-        // 深度思考渠道正文为空时回退 reasoning_content，同 anthropic 的思考块兜底
-        if (!content && !toolCalls.length && msg.reasoning_content) content = String(msg.reasoning_content);
-      } else {
-        // anthropic 协议：openai 风格消息 → 块结构（tool 消息并入下一条 user 的 tool_result 块）
-        const sys = [];
-        const amsg = [];
-        for (const m of messages) {
-          if (m.role === 'system') { if (m.content) sys.push(String(m.content)); continue; }
-          if (m.role === 'tool') {
-            const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content || '') };
-            const last = amsg[amsg.length - 1];
-            if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(block);
-            else amsg.push({ role: 'user', content: [block] });
-            continue;
+    const timeoutMs = Number(opts.timeoutMs) || 180_000;
+    const noThink = opts.thinkingDisabled === true;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        let content = '';
+        let think = '';
+        const toolCalls = [];
+        if (ch.protocol === 'openai') {
+          const body = { model, max_tokens: maxTokens, messages };
+          if (tools.length) {
+            body.tools = tools.map((t) => ({
+              type: 'function',
+              function: { name: t.name, description: t.description || '', parameters: t.parameters || { type: 'object', properties: {} } },
+            }));
+            body.tool_choice = 'auto';
           }
-          if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
-            const blocks = [];
-            if (m.content) blocks.push({ type: 'text', text: String(m.content) });
-            for (const tc of m.tool_calls) blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments || {} });
-            amsg.push({ role: 'assistant', content: blocks });
-            continue;
+          if (noThink) body.thinking = { type: 'disabled' };
+          const resp = await fetch(this._apiPath(base, '/chat/completions'), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: 'Bearer ' + ch.api_key },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
+          });
+          const text = await resp.text();
+          if (resp.status !== 200) return { ok: false, error: 'HTTP ' + resp.status + ': ' + text.slice(0, 200) };
+          const data = JSON.parse(text);
+          const msg = (data.choices && data.choices[0] && data.choices[0].message) || {};
+          content = typeof msg.content === 'string' ? msg.content : '';
+          for (const tc of msg.tool_calls || []) {
+            let args = {};
+            try { args = JSON.parse((tc.function && tc.function.arguments) || '{}'); } catch { /* 上游参数非 JSON 时按空对象 */ }
+            toolCalls.push({ id: tc.id, name: tc.function && tc.function.name, arguments: args });
           }
-          amsg.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
-        }
-        // 思考开+限预算：全关思考 glm-5.3 的工具编排严重降智（不看会话乱发
-        // 指令/多轮后忘工具用法/光应承不调工具），全开则思考与正文抢
-        // max_tokens 且偶发把答案全写进思考块——budget_tokens 封顶思考长度，两头兼顾
-        const body = { model, max_tokens: maxTokens, messages: amsg, thinking: { type: 'enabled', budget_tokens: 1024 } };
-        if (sys.length) body.system = sys.join('\n\n');
-        if (tools.length) {
-          body.tools = tools.map((t) => ({
-            name: t.name, description: t.description || '',
-            input_schema: t.parameters || { type: 'object', properties: {} },
-          }));
-        }
-        const post = (b) => fetch(this._apiPath(base, '/messages'), {
-          method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'anthropic-version': '2023-06-01',
-            'x-api-key': ch.api_key,
-            authorization: 'Bearer ' + ch.api_key,
-          },
-          body: JSON.stringify(b), signal: AbortSignal.timeout(90000),
-        });
-        let resp = await post(body);
-        let text = await resp.text();
-        if (resp.status !== 200) return { ok: false, error: 'HTTP ' + resp.status + ': ' + text.slice(0, 200) };
-        const extract = (d) => {
-          content = ''; think = ''; toolCalls.length = 0;
-          for (const b of d.content || []) {
+          // 深度思考渠道正文为空时回退 reasoning_content，同 anthropic 的思考块兜底
+          if (!content && !toolCalls.length && msg.reasoning_content) content = String(msg.reasoning_content);
+        } else {
+          // anthropic 协议：openai 风格消息 → 块结构（tool 消息并入下一条 user 的 tool_result 块）
+          const sys = [];
+          const amsg = [];
+          for (const m of messages) {
+            if (m.role === 'system') { if (m.content) sys.push(String(m.content)); continue; }
+            if (m.role === 'tool') {
+              const block = { type: 'tool_result', tool_use_id: m.tool_call_id, content: String(m.content || '') };
+              const last = amsg[amsg.length - 1];
+              if (last && last.role === 'user' && Array.isArray(last.content)) last.content.push(block);
+              else amsg.push({ role: 'user', content: [block] });
+              continue;
+            }
+            if (m.role === 'assistant' && Array.isArray(m.tool_calls) && m.tool_calls.length) {
+              const blocks = [];
+              if (m.content) blocks.push({ type: 'text', text: String(m.content) });
+              for (const tc of m.tool_calls) blocks.push({ type: 'tool_use', id: tc.id, name: tc.name, input: tc.arguments || {} });
+              amsg.push({ role: 'assistant', content: blocks });
+              continue;
+            }
+            amsg.push({ role: m.role === 'assistant' ? 'assistant' : 'user', content: String(m.content || '') });
+          }
+          // 思考开+限预算：全关思考 glm-5.3 的工具编排严重降智（不看会话乱发
+          // 指令/多轮后忘工具用法/光应承不调工具），全开则思考与正文抢
+          // max_tokens 且偶发把答案全写进思考块——budget_tokens 封顶思考长度，两头兼顾。
+          // 显式关思考（noThink）时不发 thinking 块（apipp opus 会 400 拒该参数）
+          const body = { model, max_tokens: maxTokens, messages: amsg };
+          if (!noThink) body.thinking = { type: 'enabled', budget_tokens: 1024 };
+          if (sys.length) body.system = sys.join('\n\n');
+          if (tools.length) {
+            body.tools = tools.map((t) => ({
+              name: t.name, description: t.description || '',
+              input_schema: t.parameters || { type: 'object', properties: {} },
+            }));
+          }
+          const resp = await fetch(this._apiPath(base, '/messages'), {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              'anthropic-version': '2023-06-01',
+              'x-api-key': ch.api_key,
+              authorization: 'Bearer ' + ch.api_key,
+            },
+            body: JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs),
+          });
+          const text = await resp.text();
+          if (resp.status !== 200) return { ok: false, error: 'HTTP ' + resp.status + ': ' + text.slice(0, 200) };
+          for (const b of (JSON.parse(text).content || [])) {
             if (b.type === 'text' && b.text) content += b.text;
             else if (b.type === 'thinking' && b.thinking) think += b.thinking;
             else if (b.type === 'tool_use') toolCalls.push({ id: b.id, name: b.name, arguments: b.input || {} });
           }
-        };
-        extract(JSON.parse(text));
-        // 空轮（无正文无工具）先催答重试一次：budget 下仍偶发答案全在思考里就
-        // 收轮。重试也空才退思考内容当回复（budget 已封顶，不会再倒 7 千字思维链）
-        if (!content && !toolCalls.length) {
-          const think0 = think;
-          try {
-            resp = await post({ ...body, messages: [...amsg, { role: 'user', content: '（请直接给出最终回复）' }] });
-            text = await resp.text();
-            if (resp.status === 200) extract(JSON.parse(text));
-          } catch { /* 重试失败走兜底 */ }
-          if (!content && !toolCalls.length && think0) content = think0;
         }
+        // 空壳（无正文无工具）：budget 下答案全落思考块/中转抽风——附催答重试，
+        // 重试也空才退思考内容当回复（budget 已封顶，不会再倒 7 千字思维链）
+        if (!content && !toolCalls.length && attempt < 3) {
+          log('llm_empty_shell', { channel: ch.name, model, attempt });
+          messages = [...messages, { role: 'user', content: '（请直接给出最终回复）' }];
+          continue;
+        }
+        if (!content && !toolCalls.length && think) content = think;
+        return { ok: true, content, tool_calls: toolCalls };
+      } catch (e) {
+        const err = String((e && e.message) || e);
+        log('llm_call_err', { channel: ch.name, model, attempt, err: err.slice(0, 120) });
+        // 超时=上游挂死，重试只会再挂 180s；其余网络/解析异常退避后重试
+        if (e && e.name === 'TimeoutError') return { ok: false, error: err.slice(0, 200) };
+        if (attempt >= 3) return { ok: false, error: err.slice(0, 200) };
+        await sleep(1500 * attempt);
       }
-      return { ok: true, content, tool_calls: toolCalls };
-    } catch (e) {
-      return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
     }
+    return { ok: false, error: 'unreachable' };
   }
 
-  /** 卡西代理循环：内置桥管理工具，最多 8 轮 / 240s；末轮摘掉工具强制收口。
-   *  每执行一步推 kx_step（管理台实时上屏），收轮回 kx_reply（content + steps）。 */
-  async kxAgent(ws, ch, model, params, echo) {
-    const fail = (error) => this._wsSend(ws, { post_type: 'kx_reply', ok: false, error, echo });
-    const base = Array.isArray(params.messages)
-      ? params.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
-      : [];
+  /** 插件/内部公开入口：按渠道名调上游（渠道名缺省回落默认渠道→首个可用渠道）。 */
+  async callLLM(channelName, model, messages, tools = [], opts = {}) {
+    const ch = (channelName && channelByName(channelName))
+      || (channelState.defaultChannel && channelByName(channelState.defaultChannel))
+      || API_CHANNELS.find((c) => c && c.base_url && c.api_key);
+    if (!ch || !ch.base_url || !ch.api_key) {
+      return { ok: false, error: '没有可直连的渠道（需配 base_url + api_key）' };
+    }
+    const m = String(model || ch.model || '');
+    const r = await this._kxCallLLM(ch, m, messages || [], tools || [], Number(opts.maxTokens) || 4096, opts);
+    return r.ok ? { ...r, channel: ch.name, model: m } : r;
+  }
+
+  /** 卡西代理循环的调用方化：工具定义与执行器由调用方注入（桥 KX_TOOLS ∪
+   *  插件自有工具），桥保持对具体插件零认知。返回
+   *  {ok:true, content, steps, channel, model} 或 {ok:false, error, steps}。
+   *  maxRounds 轮 / budgetMs 预算；末轮摘工具强制收口。 */
+  async kxTurn(opts) {
+    const ch = opts.ch
+      || (opts.channel && channelByName(opts.channel))
+      || (channelState.defaultChannel && channelByName(channelState.defaultChannel))
+      || API_CHANNELS.find((c) => c && c.base_url && c.api_key);
+    if (!ch || !ch.base_url || !ch.api_key) {
+      return { ok: false, error: '没有可直连的渠道（需配 base_url + api_key）', steps: [] };
+    }
+    const model = String(opts.model || ch.model || '');
+    const maxRounds = Math.max(1, Number(opts.maxRounds) || 8);
     const msgs = [{
       role: 'system',
-      content: KX_SYSTEM_PROMPT + (params.system ? '\n\n' + params.system : ''),
-    }, ...base];
+      content: String(opts.system || ''),
+    }, ...(Array.isArray(opts.messages) ? opts.messages : [])
+      .filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)];
     const steps = [];
+    const execTool = opts.execTool || (() => ({ ok: false, error: 'no executor' }));
     const t0 = Date.now();
-    for (let round = 0; round < 8; round++) {
+    for (let round = 0; round < maxRounds; round++) {
       // 末轮或超预算：摘掉工具，模型只能给最终答复
-      const noTools = round === 7 || Date.now() - t0 > 240_000;
-      const r = await this._kxCallLLM(ch, model, msgs, noTools ? [] : KX_TOOLS, 4096);
-      if (!r.ok) { await fail(r.error); return; }
+      const noTools = round === maxRounds - 1 || Date.now() - t0 > (Number(opts.budgetMs) || 240_000);
+      const r = await this._kxCallLLM(ch, model, msgs, noTools ? [] : (opts.tools || []), Number(opts.maxTokens) || 4096);
+      if (!r.ok) return { ok: false, error: r.error, steps };
       if (!r.tool_calls.length) {
-        await this._wsSend(ws, {
-          post_type: 'kx_reply', ok: true, channel: ch.name, model,
-          content: r.content, steps, echo,
-        });
-        log('kx_agent', { channel: ch.name, model, steps: steps.length, chars: r.content.length });
-        return;
+        return { ok: true, content: r.content, steps, channel: ch.name, model };
       }
       msgs.push({ role: 'assistant', content: r.content || '', tool_calls: r.tool_calls });
       for (const tc of r.tool_calls) {
         let res;
         try {
-          res = await this.kxExec(ws, tc.name, tc.arguments || {});
+          res = await execTool(tc.name, tc.arguments || {});
         } catch (e) {
           res = { ok: false, error: String((e && e.message) || e).slice(0, 200) };
         }
         const step = { name: tc.name, ok: !!(res && res.ok), brief: String((res && res.brief) || (res && res.ok ? '完成' : '失败：' + (res.error || ''))).slice(0, 120) };
         steps.push(step);
-        await this._wsSend(ws, { post_type: 'kx_step', echo, index: steps.length, ...step });
+        if (opts.onStep) {
+          try { await opts.onStep(step, steps.length); } catch { /* 回调失败不影响回合 */ }
+        }
         let payload = JSON.stringify(res);
         if (payload.length > 4000) payload = payload.slice(0, 4000) + '…(截断)';
         msgs.push({ role: 'tool', tool_call_id: tc.id, content: payload });
       }
     }
-    await fail('步数/时长预算耗尽仍未收轮');
+    return { ok: false, error: '步数/时长预算耗尽仍未收轮', steps };
+  }
+
+  /** 卡西代理循环（WS 入口）：循环体在 kxTurn（供 onebot 插件 L5 总控复用），
+   *  本方法只做 WS 帧 ↔ kxTurn 入出参转译。kx_step/kx_reply 帧形状锁死不变。 */
+  async kxAgent(ws, ch, model, params, echo) {
+    const fail = (error) => this._wsSend(ws, { post_type: 'kx_reply', ok: false, error, echo });
+    const base = Array.isArray(params.messages)
+      ? params.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
+      : [];
+    // 插件贡献的工具并入卡西工具表（app/手表端与 QQ 端 L5 同源），并在系统
+    // 提示词里点名——KX_SYSTEM_PROMPT 的内置工具清单是封闭列表，不点名模型
+    // 会把「可用工具」当 exhaustive，插件工具存在也不认（实测教训）
+    const pluginTools = [...this.kaxiPluginTools.values()];
+    const tools = [...KX_TOOLS, ...pluginTools.map((t) => t.def)];
+    const sysExtra = [
+      params.system || '',
+      pluginTools.length
+        ? '另外你还接入了插件扩展工具（同样可直接调用）：'
+          + pluginTools.map((t) => `${t.def.name}（${t.def.description}）`).join('；')
+        : '',
+    ].filter(Boolean).join('\n\n');
+    const r = await this.kxTurn({
+      ch, model,
+      system: KX_SYSTEM_PROMPT + (sysExtra ? '\n\n' + sysExtra : ''),
+      messages: base,
+      tools,
+      execTool: (name, a) => {
+        const p = this.kaxiPluginTools.get(name);
+        return p ? p.fn(name, a) : this.kxExec(ws, name, a);
+      },
+      onStep: (step, index) => this._wsSend(ws, { post_type: 'kx_step', echo, index, ...step }),
+    });
+    if (!r.ok) { await fail(r.error); return; }
+    await this._wsSend(ws, {
+      post_type: 'kx_reply', ok: true, channel: ch.name, model,
+      content: r.content, steps: r.steps, echo,
+    });
+    log('kx_agent', { channel: ch.name, model, steps: r.steps.length, chars: r.content.length, plugin_tools: pluginTools.length });
   }
 
   /** 卡西内置工具执行：全部复用桥自身的动作路径（与人工操作同源）。产生的

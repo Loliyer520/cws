@@ -90,6 +90,13 @@ const server = http.createServer((req, res) => {
     serveOcMedia(req, res, rawPath, query);
     return;
   }
+  // 插件 HTTP 路径注册表（契约 v2）：先于静态服务命中，前缀匹配交给插件
+  for (const [prefix, handler] of bridge.httpHandlers) {
+    if (rawPath === prefix || rawPath.startsWith(prefix)) {
+      handler(req, res);
+      return;
+    }
+  }
   if (WEBUI_CFG.enabled) {
     serveStatic(req, res);
   } else {
@@ -99,6 +106,19 @@ const server = http.createServer((req, res) => {
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '/', 'http://bridge.local');
+  // 插件 WS 路径注册表（契约 v2）：在 /ws 之前按前缀匹配，命中即交给插件
+  // 全权处理（鉴权插件自理，与桥 token 隔离）。/cws-ws 前缀化部署时 nginx
+  // 可能原样透传，剥前缀再匹配一次（与上方 oc-media 同手法）。
+  const paths = [url.pathname];
+  if (url.pathname.startsWith('/cws-ws/')) paths.push(url.pathname.slice('/cws-ws'.length));
+  for (const p of paths) {
+    for (const [prefix, handler] of bridge.upgradeHandlers) {
+      if (p === prefix || p.startsWith(prefix)) {
+        handler(req, socket, head);
+        return;
+      }
+    }
+  }
   if (url.pathname !== '/ws') {
     socket.write('HTTP/1.1 404 Not Found\r\n\r\n');
     socket.destroy();

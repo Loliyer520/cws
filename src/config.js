@@ -75,7 +75,9 @@ export const REAP_ON_DETACH = cfg.reap_on_detach === true;
 
 // 可拆卸插件配置：config.json plugins.<name>（非密配置 + enabled 开关），
 // secrets.json plugins.<name>（密钥等敏感字段，按名合并盖过 config.json）。
-// 停用 = 删条目或 enabled:false；替换 = 换 src/plugins/<name>.js——bridge 代码零改动
+// 停用 = 删条目或 enabled:false；替换 = 换 src/plugins/<name>/index.js（目录形态，
+// 单文件 <name>.js 仍支持）——bridge 代码零改动。契约 v2 见 bridge.js
+// _loadPlugins/_pluginCtx 注释与 src/plugins/onebot/README.md。
 export const PLUGINS = {};
 {
   const secrets = loadJsonFile(SECRETS_PATH, {});

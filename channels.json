@@ -12,7 +12,7 @@
       "name": "kimi",
       "label": "kimi",
       "base_url": "https://api.kimi.com/coding",
-      "protocol": "anthropic",
+      "protocol": "auto",
       "wire_api": "responses",
       "model": "k3"
     },
