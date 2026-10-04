@@ -13,6 +13,7 @@ import {
   persistOneTimeTokens, persistChannels, normalizeBaseUrl, isValidChannelName,
   CLAUDE_BIN, CODEX_BIN, DEFAULT_BACKEND, GATEWAYS, gatewayByName,
   setClaudeBin, setCodexBin, setDefaultBackend, setGateways, persistBackends,
+  PLUGINS,
 } from './config.js';
 import { BASE, log, now, isValidSid, safeEqual, sleep, briefOf, procAlive } from './util.js';
 
@@ -102,6 +103,29 @@ export class Bridge {
     // 磁盘清扫：启动后 15s 先跑一次，之后每小时一次
     this.sweepTimer = setInterval(() => { try { this.sweepWorkspaces(); } catch {} }, 3600_000);
     setTimeout(() => { try { this.sweepWorkspaces(); } catch {} }, 15_000);
+    // 可拆卸插件：action 名 → {fn, cfg}。装载只认 config.plugins 条目 + src/plugins/<name>.js，
+    // 桥自身不认识任何具体插件——增删替换都只改配置和插件文件，不动这里
+    this.pluginCmds = new Map();
+    this._loadPlugins().catch((e) => log('plugin_load_err', { err: String(e) }));
+  }
+
+  /** 动态装载启用的插件：src/plugins/<name>.js 导出 commands = {action: async (ctx, params, echo) => {}}。
+   *  ctx = { bridge, ws, cfg（config+secrets 合并后的插件配置）, reply(frame) } */
+  async _loadPlugins() {
+    for (const [name, pc] of Object.entries(PLUGINS)) {
+      if (pc.enabled === false) continue;
+      try {
+        const mod = await import(`./plugins/${name}.js`);
+        const cmds = mod.commands || {};
+        for (const [action, fn] of Object.entries(cmds)) {
+          if (this.pluginCmds.has(action)) { log('plugin_cmd_conflict', { plugin: name, action }); continue; }
+          this.pluginCmds.set(action, { fn, cfg: pc });
+        }
+        log('plugin_loaded', { plugin: name, commands: Object.keys(cmds) });
+      } catch (e) {
+        log('plugin_load_err', { plugin: name, err: String(e) });
+      }
+    }
   }
 
   // ---------- capacity / gating ----------
@@ -440,8 +464,22 @@ export class Bridge {
       case 'backends.test':
         await this.backendsTest(ws, params, echo);
         break;
-      default:
-        await this._wsSend(ws, { post_type: 'error', code: 'unknown_action', action, echo });
+      default: {
+        // 插件命令：内置 action 优先（不可被插件遮蔽），未命中再走插件表
+        const pc = this.pluginCmds.get(action);
+        if (pc) {
+          try {
+            await pc.fn(
+              { bridge: this, ws, cfg: pc.cfg, reply: (frame) => this._wsSend(ws, frame) },
+              params, echo);
+          } catch (e) {
+            log('plugin_cmd_err', { action, err: String(e) });
+            await this._wsSend(ws, { post_type: 'error', code: 'plugin_error', message: String(e), echo });
+          }
+        } else {
+          await this._wsSend(ws, { post_type: 'error', code: 'unknown_action', action, echo });
+        }
+      }
     }
   }
 

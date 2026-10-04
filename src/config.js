@@ -72,6 +72,20 @@ export const IDLE_TIMEOUT = Number(cfg.idle_timeout_s ?? 1800);
 // WS 断开（app 切后台）是否立刻回收会话进程：默认否——进程留到 idle_timeout 统一 reap，
 // 否则会话里挂的后台任务（等待器等）随进程组一起死，用户体验是"老被截断"
 export const REAP_ON_DETACH = cfg.reap_on_detach === true;
+
+// 可拆卸插件配置：config.json plugins.<name>（非密配置 + enabled 开关），
+// secrets.json plugins.<name>（密钥等敏感字段，按名合并盖过 config.json）。
+// 停用 = 删条目或 enabled:false；替换 = 换 src/plugins/<name>.js——bridge 代码零改动
+export const PLUGINS = {};
+{
+  const secrets = loadJsonFile(SECRETS_PATH, {});
+  for (const [name, pc] of Object.entries(cfg.plugins || {})) {
+    if (pc && typeof pc === 'object') PLUGINS[name] = { ...pc };
+  }
+  for (const [name, pc] of Object.entries(secrets.plugins || {})) {
+    if (pc && typeof pc === 'object') PLUGINS[name] = { ...(PLUGINS[name] || {}), ...pc };
+  }
+}
 // Workspace 磁盘保留期（秒）：注册表外的目录超过该时长才会被 sweep 删除；<=0 关闭清扫
 export const WS_RETENTION_S = Number(cfg.ws_retention_s ?? 7 * 86400);
 export const ALLOWED_TOOLS = cfg.allowed_tools || 'Read,Grep,Glob,AskUserQuestion';
