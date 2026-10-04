@@ -146,11 +146,14 @@ export interface UpdateState {
   lastCheck: number; // 0 = 从未检查
 }
 
-/** 卡西代理循环的一步（kx_step / kx_reply.steps） */
-export interface KxStep {
-  name: string;
-  ok: boolean;
-  brief: string;
+/** 卡西统一流水的一条显示条目（桥端 kxlog 持久化，两端共享） */
+export interface KxLogEntry {
+  eid?: string;
+  role: "user" | "kx" | "tool" | "sys" | "trigger";
+  text: string;
+  /** trigger 条目的实际指令（进 LLM 上下文用，显示用 text） */
+  prompt?: string;
+  ts?: number;
 }
 
 export interface AppState {
@@ -168,6 +171,6 @@ export interface AppState {
   modal: ModalState;
   toasts: Toast[];
   update: UpdateState;
-  /** 卡西代理循环的实时步骤（kx_step 推送，kx_reply 清空） */
-  kxSteps: KxStep[];
+  /** 卡西统一流水：启动拉 kx.history 全量，之后吃 kx_log 广播增量 */
+  kxLog: KxLogEntry[];
 }

@@ -60,6 +60,20 @@ function sidecarMode(sid) {
   return (meta && meta.permission_mode) || null;
 }
 
+// ---------- 卡西统一对话流水（kxlog） ----------
+// 一条桥一份对话：webui 管理台与手机/手表 app 共用同一份显示流水，桥端落盘
+// kxlog.jsonl 持久化（重启不丢）。条目 {eid, role, text, ts, prompt?}：
+//   user    用户发言（右气泡）
+//   kx      卡西回复（助手气泡）
+//   tool    工具行（🔧 摘要，仅展示，不进 LLM 上下文）
+//   sys     系统提示（出错/断连等，仅展示）
+//   trigger 自动触发（闹钟/盯守，text 展示、prompt 是实际进 LLM 的指令）
+// eid 全局去重：端侧产生（p 前缀）经 kx.log 上报，桥端产生（s 前缀）经 kx_log
+// 广播下发——自己上报的会广播回来，靠 eid 幂等。新连接 kx.history 拉全量。
+const KXLOG_PATH = path.join(BASE, 'kxlog.jsonl');
+const KXLOG_MAX = 300; // 盘上保留条数（超出裁尾重写）
+const KX_ROLES = new Set(['user', 'kx', 'tool', 'sys', 'trigger']);
+
 // ---------- 卡西（桥的自动管理助手）提示词与内置工具 ----------
 const KX_SYSTEM_PROMPT = [
   '你是卡西，cws 桥（Claude Code / Codex / OpenClaw 多会话 WebSocket 桥）的自动管理助手，不只是手表入口——你管理整条桥。',
@@ -112,6 +126,9 @@ export class Bridge {
     this.pluginShutdowns = [];        // 插件 shutdown()，桥关停时逆序调用
     this.kaxiPluginTools = new Map(); // 插件贡献给卡西的工具：name → {def, fn}——
     //  卡西（app/手表端 kx.chat 与 QQ 端 L5 共用）的工具表 = KX_TOOLS ∪ 本表
+    // 统一对话流水：启动即载入（同步读，进程内唯一写者）
+    this.kxlog = this._kxlogLoad();
+    this._kxEids = new Set(this.kxlog.map((e) => e.eid).filter(Boolean));
     this._loadPlugins().catch((e) => log('plugin_load_err', { err: String(e) }));
   }
 
@@ -410,6 +427,15 @@ export class Bridge {
       case 'kx.chat':
         await this.kxChat(ws, params, echo);
         break;
+      case 'kx.history':
+        await this._wsSend(ws, { post_type: 'kx_history', entries: this.kxlog, echo });
+        break;
+      case 'kx.log': {
+        const list = Array.isArray(params.entries) ? params.entries.slice(0, 20) : [];
+        const added = this.kxLogAppend(list);
+        await this._wsSend(ws, { post_type: 'kx_logged', count: added.length, echo });
+        break;
+      }
       case 'update.check':
         await this.updateCheck(ws, echo);
         break;
@@ -1139,6 +1165,71 @@ export class Bridge {
     }
   }
 
+  // ---------- 卡西统一流水：落盘 / 追加 / 上下文 ----------
+
+  /** 启动载入 kxlog.jsonl：逐行解析，坏行跳过；超 KXLOG_MAX 裁尾并重写。 */
+  _kxlogLoad() {
+    let out = [];
+    try {
+      const raw = fs.readFileSync(KXLOG_PATH, 'utf8');
+      for (const line of raw.split('\n')) {
+        if (!line.trim()) continue;
+        try {
+          const e = JSON.parse(line);
+          if (e && KX_ROLES.has(e.role) && typeof e.text === 'string') out.push(e);
+        } catch { /* 坏行跳过 */ }
+      }
+    } catch { /* 无文件=空流水 */ }
+    if (out.length > KXLOG_MAX) {
+      out = out.slice(-KXLOG_MAX);
+      try { fs.writeFileSync(KXLOG_PATH, out.map((e) => JSON.stringify(e)).join('\n') + '\n'); } catch { /* 落盘失败不碍内存态 */ }
+    }
+    return out;
+  }
+
+  /** 追加显示条目（桥端产生或端侧 kx.log 上报）：校验 → eid 去重 → 落盘 →
+   *  广播 kx_log 给全部已认证连接。返回实际新增的条目（重复/非法的不算）。 */
+  kxLogAppend(list) {
+    const out = [];
+    for (const raw of list) {
+      if (!raw || typeof raw !== 'object') continue;
+      const role = String(raw.role || '');
+      const text = String(raw.text || '').slice(0, 2000);
+      if (!KX_ROLES.has(role) || !text) continue;
+      let eid = typeof raw.eid === 'string' && raw.eid ? raw.eid.slice(0, 40) : '';
+      if (eid && this._kxEids.has(eid)) continue; // 幂等：广播回环/重报不重复
+      if (!eid) eid = 's' + crypto.randomBytes(8).toString('hex');
+      const e = { eid, role, text, ts: Date.now() };
+      if (raw.prompt) e.prompt = String(raw.prompt).slice(0, 2000);
+      this.kxlog.push(e);
+      this._kxEids.add(eid);
+      out.push(e);
+      try { fs.appendFileSync(KXLOG_PATH, JSON.stringify(e) + '\n'); } catch { /* 同上 */ }
+    }
+    if (!out.length) return out;
+    if (this.kxlog.length > KXLOG_MAX + 100) {
+      this.kxlog = this.kxlog.slice(-KXLOG_MAX);
+      try { fs.writeFileSync(KXLOG_PATH, this.kxlog.map((e) => JSON.stringify(e)).join('\n') + '\n'); } catch { /* 同上 */ }
+    }
+    if (this._kxEids.size > 4000) this._kxEids = new Set(this.kxlog.map((e) => e.eid));
+    for (const c of this.conns) {
+      this._wsSend(c, { post_type: 'kx_log', entries: out }).catch(() => {});
+    }
+    return out;
+  }
+
+  /** 从统一流水重建 LLM 上下文（最近 40 条）：user→user、trigger→user
+   *  （用 prompt 实际指令）、kx→assistant；tool/sys 仅展示不进上下文。 */
+  _kxContext() {
+    const out = [];
+    for (const e of this.kxlog.slice(-40)) {
+      if (e.role === 'user') out.push({ role: 'user', content: e.text });
+      else if (e.role === 'trigger') out.push({ role: 'user', content: e.prompt || e.text });
+      else if (e.role === 'kx') out.push({ role: 'assistant', content: e.text });
+    }
+    return out;
+  }
+
   // ---------- 卡西：桥的自动管理助手 ----------
   // 密钥留在服务端。两种形态共用一套上游调用：
   //  · 透传（手表）：客户端自带 messages + tools（{name,description,parameters}
@@ -1359,12 +1450,22 @@ export class Bridge {
   }
 
   /** 卡西代理循环（WS 入口）：循环体在 kxTurn（供 onebot 插件 L5 总控复用），
-   *  本方法只做 WS 帧 ↔ kxTurn 入出参转译。kx_step/kx_reply 帧形状锁死不变。 */
+   *  本方法只做 WS 帧 ↔ kxTurn 入出参转译 + 统一流水记录。上下文不再由
+   *  客户端带 messages，而是每次从 kxlog 重建——webui 与 app 看到的、
+   *  卡西记得的，都是同一份对话。kx_step/kx_reply 帧形状锁死不变。 */
   async kxAgent(ws, ch, model, params, echo) {
     const fail = (error) => this._wsSend(ws, { post_type: 'kx_reply', ok: false, error, echo });
-    const base = Array.isArray(params.messages)
-      ? params.messages.filter((m) => m && (m.role === 'user' || m.role === 'assistant') && m.content)
-      : [];
+    // 新协议 params.text；兼容旧端只带 messages 的形态（取末条 user）
+    let text = String(params.text || '').trim();
+    if (!text && Array.isArray(params.messages)) {
+      for (let i = params.messages.length - 1; i >= 0; i--) {
+        const m = params.messages[i];
+        if (m && m.role === 'user' && m.content) { text = String(m.content).trim(); break; }
+      }
+    }
+    if (!text) { await fail('空消息'); return; }
+    // 先入流水再建上下文（_kxContext 含本条），广播让两端实时看到发言
+    this.kxLogAppend([{ role: 'user', text }]);
     // 插件贡献的工具并入卡西工具表（app/手表端与 QQ 端 L5 同源），并在系统
     // 提示词里点名——KX_SYSTEM_PROMPT 的内置工具清单是封闭列表，不点名模型
     // 会把「可用工具」当 exhaustive，插件工具存在也不认（实测教训）
@@ -1380,15 +1481,24 @@ export class Bridge {
     const r = await this.kxTurn({
       ch, model,
       system: KX_SYSTEM_PROMPT + (sysExtra ? '\n\n' + sysExtra : ''),
-      messages: base,
+      messages: this._kxContext(),
       tools,
       execTool: (name, a) => {
         const p = this.kaxiPluginTools.get(name);
         return p ? p.fn(name, a) : this.kxExec(ws, name, a);
       },
-      onStep: (step, index) => this._wsSend(ws, { post_type: 'kx_step', echo, index, ...step }),
+      onStep: (step, index) => {
+        // 工具行实时入流水（广播到两端），旧客户端的 kx_step 帧照常发
+        this.kxLogAppend([{ role: 'tool', text: '🔧 ' + step.name + ' · ' + (step.ok ? '完成' : '失败') + (step.brief ? ' · ' + step.brief : '') }]);
+        return this._wsSend(ws, { post_type: 'kx_step', echo, index, ...step });
+      },
     });
-    if (!r.ok) { await fail(r.error); return; }
+    if (!r.ok) {
+      this.kxLogAppend([{ role: 'sys', text: '卡西出错了：' + r.error }]);
+      await fail(r.error);
+      return;
+    }
+    this.kxLogAppend([{ role: 'kx', text: r.content }]);
     await this._wsSend(ws, {
       post_type: 'kx_reply', ok: true, channel: ch.name, model,
       content: r.content, steps: r.steps, echo,

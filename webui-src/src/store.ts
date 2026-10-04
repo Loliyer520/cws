@@ -5,7 +5,7 @@
 import { useSyncExternalStore } from "react";
 import { Api, type Frame } from "./api";
 import type {
-  AppState, AskFrame, Backend, Channel, ImgAttachment, ModalState,
+  AppState, AskFrame, Backend, Channel, ImgAttachment, KxLogEntry, ModalState,
   SessionInfo, SessionState, Toast, UpdateState,
 } from "./types";
 
@@ -46,7 +46,7 @@ class Store {
     modal: null,
     toasts: [],
     update: this.update,
-    kxSteps: [],
+    kxLog: [],
   };
 
   api: Api | null = null;
@@ -164,6 +164,7 @@ class Store {
       this.state.loginErr = "";
       this.send("channels.list");
       this.send("sessions.list");
+      this.send("kx.history");
       this.send("sessions.sync", { marks: this.marks, attach: this.state.current || undefined });
       // 直达会话：?sid=xxx 自动打开
       if (this.pendingSid && !this.state.current) {
@@ -289,8 +290,9 @@ class Store {
   }
 
   // ---------- 卡西（桥管理助手）代理 ----------
-  /** 一问一答调用 kx.chat；透传 95s 兜底，agent 形态（服务端自跑循环）放宽到 timeoutMs */
-  kxCall(params: Frame, timeoutMs = 95_000): Promise<Frame> {
+  /** 一问一答调用 kx.chat；agent 形态（服务端自跑循环 + 统一流水）放宽到 timeoutMs。
+   *  对话内容不靠返回值渲染——服务端已入流水并广播 kx_log，这里只管 ok/error。 */
+  kxCall(params: Frame, timeoutMs = 600_000): Promise<Frame> {
     if (!this.api?.ready) return Promise.resolve({ ok: false, error: "未连接" });
     return new Promise((resolve) => {
       const echo = this.api!.rawEcho();
@@ -298,7 +300,6 @@ class Store {
       this.send("kx.chat", { ...params, echo });
       setTimeout(() => {
         if (this.kxWaiters.delete(echo)) {
-          this.state.kxSteps = [];
           resolve({ ok: false, error: "超时（" + Math.round(timeoutMs / 1000) + "s）" });
         }
       }, timeoutMs);
@@ -461,18 +462,28 @@ class Store {
         }
         break;
       }
-      case "kx_step": {
-        // 代理循环实时步骤：只上屏，不落对话历史（kx_reply.steps 会带回完整清单）
-        this.state.kxSteps = [...this.state.kxSteps, { name: f.name || "", ok: !!f.ok, brief: f.brief || "" }];
+      case "kx_history": {
+        // 启动全量：桥端是权威，直接替换
+        this.state.kxLog = (f.entries || []) as KxLogEntry[];
         this.touch();
         break;
       }
+      case "kx_log": {
+        // 统一流水广播：任何一端产生的条目都追加进来（桥已按 eid 去重）
+        const add = (f.entries || []) as KxLogEntry[];
+        if (add.length) {
+          this.state.kxLog = [...this.state.kxLog, ...add];
+          this.touch();
+        }
+        break;
+      }
+      case "kx_step":
+        // 旧版实时步骤帧：统一流水后由 kx_log 的工具行替代，忽略
+        break;
       case "kx_reply": {
         const w = this.kxWaiters.get(f.echo);
         if (w) {
           this.kxWaiters.delete(f.echo);
-          this.state.kxSteps = [];
-          this.touch();
           w(f);
         } else if (!f.ok) this.toast("卡西请求失败：" + (f.error || ""), "err");
         break;

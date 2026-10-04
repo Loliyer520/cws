@@ -323,6 +323,17 @@ body {
   letter-spacing: .04em;
   animation: msgIn .45s ease both;
 }
+/* 卡西流水里的触发条目（闹钟自转等）：居中玫瑰色小胶囊 */
+.kx-trig {
+  align-self: center;
+  font-size: 12px; color: var(--rose);
+  background: var(--rose-tint);
+  border-radius: 999px;
+  padding: 4px 12px;
+  max-width: 80%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  animation: msgIn .45s ease both;
+}
 .stat {
   text-align: center;
   font-size: 11px; color: var(--ink-faint);

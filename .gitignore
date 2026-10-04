@@ -13,3 +13,4 @@ package-lock.json
 test_results.json
 .jspace/
 data/
+kxlog.jsonl
